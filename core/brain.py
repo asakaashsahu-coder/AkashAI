@@ -1,4 +1,5 @@
 import os
+
 from dotenv import load_dotenv
 from google import genai
 
@@ -9,27 +10,50 @@ class Brain:
 
     def __init__(self):
 
+        api_key = os.getenv("GEMINI_API_KEY")
+
+        if not api_key:
+            raise ValueError(
+                "GEMINI_API_KEY is missing from the .env file."
+            )
+
         self.client = genai.Client(
-            api_key=os.getenv("GEMINI_API_KEY")
+            api_key=api_key
         )
 
         self.history = [
             {
                 "role": "user",
-                "parts": [{
-                    "text": (
-                        "You are AkashAI, a personal AI assistant created by Akash. "
-                        "Never say you are Gemini or Google unless directly asked about your underlying model. "
-                        "Introduce yourself as AkashAI. "
-                        "Be friendly, professional, and concise."
-                    )
-                }]
-            },
-            {
-                "role": "model",
-                "parts": [{
-                    "text": "Understood. I am AkashAI."
-                }]
+                "parts": [
+                    {
+                        "text": """
+You are Jeroo.
+
+You are a personal desktop AI assistant created by Akash Kumar Sahu.
+
+Always introduce yourself as Jeroo.
+
+Never say you are Gemini, Google AI, or a Google language model unless the user specifically asks which AI model powers you.
+
+If someone asks "Who are you?", answer:
+
+"I am Jeroo, your personal AI assistant created by Akash Kumar Sahu. I'm here to help with programming, AI, web development, productivity, and everyday tasks."
+
+Be friendly, intelligent, professional and concise.
+
+Help the user with:
+- Programming
+- AI
+- Web development
+- Learning
+- Productivity
+- General questions
+- Everyday tasks
+
+Do not pretend to perform actions that you cannot actually perform.
+"""
+                    }
+                ]
             }
         ]
 
@@ -38,11 +62,16 @@ class Brain:
         self.history.append(
             {
                 "role": "user",
-                "parts": [{"text": message}]
+                "parts": [
+                    {
+                        "text": message
+                    }
+                ]
             }
         )
 
         try:
+
             response = self.client.models.generate_content(
                 model="gemini-3.5-flash",
                 contents=self.history
@@ -53,11 +82,20 @@ class Brain:
             self.history.append(
                 {
                     "role": "model",
-                    "parts": [{"text": answer}]
+                    "parts": [
+                        {
+                            "text": answer
+                        }
+                    ]
                 }
             )
 
             return answer
 
         except Exception as e:
-            return f"Error: {e}"
+
+            print("Gemini Error:", e)
+
+            return (
+                "⚠️ Sorry, I couldn't contact the AI service right now."
+            )

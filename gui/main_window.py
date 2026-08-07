@@ -1,123 +1,313 @@
 import customtkinter as ctk
-from core.brain import Brain
+
+from core.router import Router
+from core.voice import Voice
+from core.listener import Listener
+
+from gui.header import Header
+from gui.sidebar import Sidebar
+from gui.chat_area import ChatArea
+from gui.input_bar import InputBar
 
 
-class MainWindow:
+class MainWindow(ctk.CTk):
 
     def __init__(self):
+
+        super().__init__()
+
+        # ==================================================
+        # WINDOW SETTINGS
+        # ==================================================
 
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
-        self.brain = Brain()
+        self.title("Jeroo AI")
+        self.geometry("1200x700")
 
-        self.app = ctk.CTk()
-        self.app.title("🤖 AkashAI")
-        self.app.geometry("950x650")
+        # ==================================================
+        # CORE SYSTEMS
+        # ==================================================
 
-        # ---------- Header ----------
-        self.header = ctk.CTkFrame(self.app, height=60)
-        self.header.pack(fill="x")
+        self.router = Router()
+        self.voice = Voice()
+        self.listener = Listener()
 
-        self.title = ctk.CTkLabel(
-            self.header,
-            text="🤖 AkashAI",
-            font=("Arial", 26, "bold")
-        )
-        self.title.pack(pady=15)
+        # ==================================================
+        # HEADER
+        # ==================================================
 
-        # ---------- Chat Box ----------
-        self.chat_box = ctk.CTkTextbox(
-            self.app,
-            wrap="word",
-            font=("Arial", 15)
+        self.header = Header(self)
+
+        self.header.pack(
+            fill="x"
         )
 
-        self.chat_box.pack(
+        # ==================================================
+        # MAIN FRAME
+        # ==================================================
+
+        self.main_frame = ctk.CTkFrame(
+            self
+        )
+
+        self.main_frame.pack(
+            fill="both",
+            expand=True
+        )
+
+        # ==================================================
+        # SIDEBAR
+        # ==================================================
+
+        self.sidebar = Sidebar(
+            self.main_frame
+        )
+
+        self.sidebar.pack(
+            side="left",
+            fill="y"
+        )
+
+        # ==================================================
+        # RIGHT SIDE
+        # ==================================================
+
+        self.right_frame = ctk.CTkFrame(
+            self.main_frame
+        )
+
+        self.right_frame.pack(
+            side="left",
+            fill="both",
+            expand=True
+        )
+
+        # ==================================================
+        # CHAT AREA
+        # ==================================================
+
+        self.chat_area = ChatArea(
+            self.right_frame
+        )
+
+        self.chat_area.pack(
             fill="both",
             expand=True,
-            padx=20,
-            pady=15
+            padx=10,
+            pady=(10, 0)
         )
 
-        self.chat_box.insert(
-            "end",
-            "🤖 AkashAI: Hello! I am your personal AI assistant.\n\n"
+        # ==================================================
+        # INPUT BAR
+        # ==================================================
+
+        self.input_bar = InputBar(
+            self.right_frame,
+            self.send_message,
+            self.voice_input,
+            self.clear_chat,
+            self.stop_speaking
         )
 
-        self.chat_box.configure(state="disabled")
-
-        # ---------- Bottom ----------
-        self.bottom = ctk.CTkFrame(self.app)
-        self.bottom.pack(fill="x", padx=20, pady=10)
-
-        self.message_entry = ctk.CTkEntry(
-            self.bottom,
-            placeholder_text="Ask me anything..."
-        )
-
-        self.message_entry.pack(
-            side="left",
+        self.input_bar.pack(
             fill="x",
-            expand=True,
-            padx=(10, 10),
-            pady=10
-        )
-
-        self.message_entry.bind("<Return>", self.send_message_event)
-
-        self.send_button = ctk.CTkButton(
-            self.bottom,
-            text="Send",
-            width=90,
-            command=self.send_message
-        )
-
-        self.send_button.pack(
-            side="right",
             padx=10,
             pady=10
         )
 
-    def send_message_event(self, event):
-        self.send_message()
+    # ==================================================
+    # SEND MESSAGE
+    # ==================================================
 
-    def send_message(self):
+    def send_message(self, message):
 
-        message = self.message_entry.get().strip()
-
-        if not message:
+        if not message.strip():
             return
 
-        self.chat_box.configure(state="normal")
-
-        self.chat_box.insert(
-            "end",
-            f"👤 You: {message}\n\n"
+        # Show user message
+        self.chat_area.add_message(
+            "You",
+            message
         )
 
-        self.chat_box.insert(
-            "end",
-            "🤖 AkashAI: Thinking...\n\n"
+        # Show thinking
+        self.chat_area.add_message(
+            "Jeroo",
+            "Thinking..."
         )
 
-        self.chat_box.see("end")
-        self.app.update()
+        self.update()
 
-        response = self.brain.get_response(message)
+        # ==================================================
+        # GET AI RESPONSE
+        # ==================================================
 
-        self.chat_box.delete("end-2l", "end")
+        try:
 
-        self.chat_box.insert(
-            "end",
-            f"🤖 AkashAI: {response}\n\n"
+            response = self.router.get_response(
+                message
+            )
+
+        except Exception as e:
+
+            response = f"Error: {e}"
+
+        # Remove Thinking...
+        self.chat_area.remove_last_message()
+
+        # Show response
+        self.chat_area.add_message(
+            "Jeroo",
+            response
         )
 
-        self.chat_box.configure(state="disabled")
+        self.update()
 
-        self.chat_box.see("end")
+        # ==================================================
+        # SPEAK RESPONSE
+        # ==================================================
 
-        self.message_entry.delete(0, "end")
+        try:
 
-    def run(self):
-        self.app.mainloop()
+            self.voice.speak(
+                response
+            )
+
+        except Exception as e:
+
+            print(
+                "Voice error:",
+                e
+            )
+
+    # ==================================================
+    # VOICE INPUT
+    # ==================================================
+
+    def voice_input(self):
+
+        self.chat_area.add_message(
+            "Jeroo",
+            "🎤 Listening..."
+        )
+
+        self.update()
+
+        # ==================================================
+        # LISTEN
+        # ==================================================
+
+        try:
+
+            text = self.listener.listen()
+
+        except Exception as e:
+
+            print(
+                "Microphone error:",
+                e
+            )
+
+            text = None
+
+        # Remove Listening...
+        self.chat_area.remove_last_message()
+
+        # ==================================================
+        # NOTHING HEARD
+        # ==================================================
+
+        if not text:
+
+            self.chat_area.add_message(
+                "Jeroo",
+                "I couldn't understand that. Please try again."
+            )
+
+            return
+
+        # ==================================================
+        # SHOW USER SPEECH
+        # ==================================================
+
+        self.chat_area.add_message(
+            "You",
+            text
+        )
+
+        # Thinking
+        self.chat_area.add_message(
+            "Jeroo",
+            "Thinking..."
+        )
+
+        self.update()
+
+        # ==================================================
+        # GET RESPONSE
+        # ==================================================
+
+        try:
+
+            response = self.router.get_response(
+                text
+            )
+
+        except Exception as e:
+
+            response = f"Error: {e}"
+
+        # Remove Thinking...
+        self.chat_area.remove_last_message()
+
+        # Show Jeroo response
+        self.chat_area.add_message(
+            "Jeroo",
+            response
+        )
+
+        self.update()
+
+        # ==================================================
+        # SPEAK RESPONSE
+        # ==================================================
+
+        try:
+
+            self.voice.speak(
+                response
+            )
+
+        except Exception as e:
+
+            print(
+                "Voice error:",
+                e
+            )
+
+    # ==================================================
+    # STOP JEROO SPEAKING
+    # ==================================================
+
+    def stop_speaking(self):
+
+        try:
+
+            self.voice.stop()
+
+        except Exception as e:
+
+            print(
+                "Stop voice error:",
+                e
+            )
+
+    # ==================================================
+    # CLEAR CHAT
+    # ==================================================
+
+    def clear_chat(self):
+
+        self.chat_area.clear()

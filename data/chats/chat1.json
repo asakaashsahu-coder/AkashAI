@@ -1,0 +1,26 @@
+[
+    {
+        "role": "You",
+        "message": "open notepad"
+    },
+    {
+        "role": "Jeroo",
+        "message": "\u2705 Opening Notepad..."
+    },
+    {
+        "role": "You",
+        "message": "open youtube"
+    },
+    {
+        "role": "Jeroo",
+        "message": "\ud83c\udf10 Opening Youtube..."
+    },
+    {
+        "role": "You",
+        "message": "open youtube"
+    },
+    {
+        "role": "Jeroo",
+        "message": "\ud83c\udf10 Opening Youtube..."
+    }
+]
