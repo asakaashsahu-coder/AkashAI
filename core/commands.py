@@ -1,3 +1,4 @@
+
 import subprocess
 
 from services.app_launcher import AppLauncher
@@ -281,7 +282,6 @@ class Commands:
             "reboot",
             "reboot pc",
             "reboot my pc",
-
         ]
 
         if cleaned in restart_phrases:
@@ -346,7 +346,6 @@ class Commands:
             "put my pc to sleep",
 
             "sleep pc",
-
         ]
 
         if cleaned in sleep_phrases:
@@ -470,7 +469,6 @@ class Commands:
             "pictures",
             "music",
             "videos",
-
         ]
 
         for folder in folders:
@@ -496,7 +494,6 @@ class Commands:
             "google search for ",
             "search for ",
             "search google ",
-
         ]
 
         for prefix in google_prefixes:
@@ -522,7 +519,6 @@ class Commands:
             "search youtube for ",
             "youtube search for ",
             "search youtube ",
-
         ]
 
         for prefix in youtube_prefixes:
@@ -551,7 +547,6 @@ class Commands:
             "gmail",
             "chatgpt",
             "stackoverflow",
-
         ]
 
         for website in websites:
@@ -566,7 +561,7 @@ class Commands:
                 )
 
         # ==================================================
-        # OPEN APPLICATION
+        # SMART OPEN APPLICATION
         # ==================================================
 
         if cleaned.startswith("open "):
@@ -577,13 +572,12 @@ class Commands:
 
             if app_name:
 
-                if self.launcher.is_supported(
+                # The AppLauncher now searches
+                # automatically discovered Windows
+                # Start Menu applications.
+                return self.launcher.open_app(
                     app_name
-                ):
-
-                    return self.launcher.open_app(
-                        app_name
-                    )
+                )
 
         # ==================================================
         # CLOSE APPLICATION
@@ -617,7 +611,6 @@ class Commands:
 
                 "paint":
                     "mspaint.exe",
-
             }
 
             if app_name in process_names:
@@ -652,3 +645,4 @@ class Commands:
         # ==================================================
 
         return None
+
