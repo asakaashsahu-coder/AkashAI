@@ -1,8 +1,5 @@
-import customtkinter as ctk
 
-from core.router import Router
-from core.voice import Voice
-from core.listener import Listener
+import customtkinter as ctk
 
 from gui.header import Header
 from gui.sidebar import Sidebar
@@ -30,9 +27,12 @@ class MainWindow(ctk.CTk):
         # CORE SYSTEMS
         # ==================================================
 
-        self.router = Router()
-        self.voice = Voice()
-        self.listener = Listener()
+        # Start as None.
+        # They will be loaded after the GUI appears.
+
+        self.router = None
+        self.voice = None
+        self.listener = None
 
         # ==================================================
         # HEADER
@@ -117,6 +117,67 @@ class MainWindow(ctk.CTk):
             pady=10
         )
 
+        # ==================================================
+        # LOAD CORE SYSTEMS AFTER GUI APPEARS
+        # ==================================================
+
+        self.after(
+            100,
+            self.initialize_core
+        )
+
+    # ==================================================
+    # INITIALIZE CORE SYSTEMS
+    # ==================================================
+
+    def initialize_core(self):
+
+        try:
+
+            print(
+                "Loading Jeroo core systems..."
+            )
+
+            from core.router import Router
+            from core.voice import Voice
+            from core.listener import Listener
+
+            self.router = Router()
+            self.voice = Voice()
+            self.listener = Listener()
+
+            print(
+                "Jeroo core systems ready."
+            )
+
+        except Exception as e:
+
+            print(
+                "Core initialization error:",
+                e
+            )
+
+    # ==================================================
+    # CHECK CORE SYSTEMS
+    # ==================================================
+
+    def core_ready(self):
+
+        if (
+            self.router is None
+            or self.voice is None
+            or self.listener is None
+        ):
+
+            self.chat_area.add_message(
+                "Jeroo",
+                "I'm still starting up. Please try again in a moment."
+            )
+
+            return False
+
+        return True
+
     # ==================================================
     # SEND MESSAGE
     # ==================================================
@@ -126,13 +187,22 @@ class MainWindow(ctk.CTk):
         if not message.strip():
             return
 
-        # Show user message
+        if not self.core_ready():
+            return
+
+        # ==================================================
+        # SHOW USER MESSAGE
+        # ==================================================
+
         self.chat_area.add_message(
             "You",
             message
         )
 
-        # Show thinking
+        # ==================================================
+        # SHOW THINKING
+        # ==================================================
+
         self.chat_area.add_message(
             "Jeroo",
             "Thinking..."
@@ -154,10 +224,16 @@ class MainWindow(ctk.CTk):
 
             response = f"Error: {e}"
 
-        # Remove Thinking...
+        # ==================================================
+        # REMOVE THINKING
+        # ==================================================
+
         self.chat_area.remove_last_message()
 
-        # Show response
+        # ==================================================
+        # SHOW RESPONSE
+        # ==================================================
+
         self.chat_area.add_message(
             "Jeroo",
             response
@@ -188,6 +264,9 @@ class MainWindow(ctk.CTk):
 
     def voice_input(self):
 
+        if not self.core_ready():
+            return
+
         self.chat_area.add_message(
             "Jeroo",
             "🎤 Listening..."
@@ -212,7 +291,10 @@ class MainWindow(ctk.CTk):
 
             text = None
 
-        # Remove Listening...
+        # ==================================================
+        # REMOVE LISTENING
+        # ==================================================
+
         self.chat_area.remove_last_message()
 
         # ==================================================
@@ -237,7 +319,10 @@ class MainWindow(ctk.CTk):
             text
         )
 
-        # Thinking
+        # ==================================================
+        # THINKING
+        # ==================================================
+
         self.chat_area.add_message(
             "Jeroo",
             "Thinking..."
@@ -259,10 +344,16 @@ class MainWindow(ctk.CTk):
 
             response = f"Error: {e}"
 
-        # Remove Thinking...
+        # ==================================================
+        # REMOVE THINKING
+        # ==================================================
+
         self.chat_area.remove_last_message()
 
-        # Show Jeroo response
+        # ==================================================
+        # SHOW RESPONSE
+        # ==================================================
+
         self.chat_area.add_message(
             "Jeroo",
             response
@@ -293,6 +384,9 @@ class MainWindow(ctk.CTk):
 
     def stop_speaking(self):
 
+        if self.voice is None:
+            return
+
         try:
 
             self.voice.stop()
@@ -311,3 +405,4 @@ class MainWindow(ctk.CTk):
     def clear_chat(self):
 
         self.chat_area.clear()
+
