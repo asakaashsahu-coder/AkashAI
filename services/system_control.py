@@ -1,4 +1,7 @@
+import os
 import subprocess
+from datetime import datetime
+from pathlib import Path
 
 
 class SystemControl:
@@ -16,6 +19,7 @@ class SystemControl:
                 subprocess.run(
                     [
                         "powershell",
+                        "-NoProfile",
                         "-Command",
                         "(New-Object -ComObject WScript.Shell).SendKeys([char]175)"
                     ],
@@ -40,6 +44,7 @@ class SystemControl:
                 subprocess.run(
                     [
                         "powershell",
+                        "-NoProfile",
                         "-Command",
                         "(New-Object -ComObject WScript.Shell).SendKeys([char]174)"
                     ],
@@ -62,20 +67,177 @@ class SystemControl:
             subprocess.run(
                 [
                     "powershell",
+                    "-NoProfile",
                     "-Command",
                     "(New-Object -ComObject WScript.Shell).SendKeys([char]173)"
                 ],
                 capture_output=True
             )
 
-            return "Audio muted."
+            return "Audio mute toggled."
 
         except Exception as e:
 
             return (
-                f"I couldn't mute the computer. "
+                f"I couldn't change the mute state. "
                 f"Error: {e}"
             )
+
+    # =========================================
+    # BATTERY STATUS
+    # =========================================
+
+    def battery_status(self):
+
+        try:
+
+            command = (
+                "$battery = Get-CimInstance Win32_Battery | Select-Object -First 1; "
+                "if ($null -eq $battery) { Write-Output 'NO_BATTERY' } "
+                "else { Write-Output ($battery.EstimatedChargeRemaining.ToString() + '|' + "
+                "$battery.BatteryStatus.ToString()) }"
+            )
+
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+            output = result.stdout.strip()
+
+            if not output or output == "NO_BATTERY":
+                return "I couldn't detect a battery on this computer."
+
+            percentage, status_code = output.split("|", 1)
+
+            status_names = {
+                "1": "discharging",
+                "2": "connected to power",
+                "3": "fully charged",
+                "4": "low",
+                "5": "critical",
+                "6": "charging",
+                "7": "charging",
+                "8": "charging",
+                "9": "charging",
+                "10": "undefined",
+                "11": "partially charged",
+            }
+
+            state = status_names.get(
+                status_code.strip(),
+                "status unknown"
+            )
+
+            return (
+                f"Your battery is at {percentage}% "
+                f"and is {state}."
+            )
+
+        except Exception as e:
+
+            return (
+                "I couldn't read the battery status. "
+                f"Error: {e}"
+            )
+
+    # =========================================
+    # SCREENSHOT
+    # =========================================
+
+    def take_screenshot(self):
+
+        try:
+
+            pictures = Path.home() / "Pictures"
+            screenshot_folder = pictures / "Jeroo Screenshots"
+            screenshot_folder.mkdir(
+                parents=True,
+                exist_ok=True
+            )
+
+            timestamp = datetime.now().strftime(
+                "%Y-%m-%d_%H-%M-%S"
+            )
+
+            screenshot_path = (
+                screenshot_folder
+                / f"Jeroo_Screenshot_{timestamp}.png"
+            )
+
+            safe_path = str(screenshot_path).replace(
+                "'",
+                "''"
+            )
+
+            command = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "Add-Type -AssemblyName System.Drawing; "
+                "$bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen; "
+                "$bitmap = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height); "
+                "$graphics = [System.Drawing.Graphics]::FromImage($bitmap); "
+                "$graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bitmap.Size); "
+                f"$bitmap.Save('{safe_path}', [System.Drawing.Imaging.ImageFormat]::Png); "
+                "$graphics.Dispose(); $bitmap.Dispose();"
+            )
+
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+            if result.returncode != 0:
+                error = result.stderr.strip()
+                return (
+                    "I couldn't take the screenshot. "
+                    f"Error: {error}"
+                )
+
+            return (
+                "Screenshot taken and saved in "
+                "Pictures > Jeroo Screenshots."
+            )
+
+        except Exception as e:
+
+            return (
+                "I couldn't take the screenshot. "
+                f"Error: {e}"
+            )
+
+    # =========================================
+    # DATE AND TIME
+    # =========================================
+
+    def current_time(self):
+
+        now = datetime.now()
+
+        return now.strftime(
+            "It's %I:%M %p."
+        ).lstrip("0")
+
+    def current_date(self):
+
+        now = datetime.now()
+
+        return now.strftime(
+            "Today is %A, %d %B %Y."
+        )
 
     # =========================================
     # SHUTDOWN

@@ -1,55 +1,115 @@
+import re
+
 from core.commands import Commands
 from core.brain import Brain
+from core.intent_manager import IntentManager
 from services.memory import Memory
+from services.screen_manager import ScreenManager
+from services.automation_manager import AutomationManager
+from services.context_manager import ActionContext
+from services.conversation_context import ConversationContext
+from services.screen_context import ScreenContext
+from services.screen_action_manager import ScreenActionManager
+from services.coding_assistant import CodingAssistant
+from services.file_assistant import FileAssistant
+from services.web_research import WebResearch
+from services.smart_router import SmartRouter
 
 
 class Router:
 
     def __init__(self):
-
         self.commands = Commands()
         self.brain = Brain()
+        self.intent_manager = IntentManager()
         self.memory = Memory()
+        self.screen = ScreenManager()
+        self.automation = AutomationManager()
+        self.context = ActionContext()
+        self.conversation_context = ConversationContext()
+        self.screen_context = ScreenContext(lifetime_seconds=300)
+        self.screen_actions = ScreenActionManager()
+        self.coding = CodingAssistant(self.commands.projects)
+        self.files = FileAssistant()
+        self.web_research = WebResearch()
+        self.smart_router = SmartRouter()
+        self.pending_screen_action = None
+
+        self.pending_active_close = None
+        self.pending_context_close = None
+        self.pending_multi_close = None
 
     # --------------------------------------------------
     # NORMALIZE USER MESSAGE
     # --------------------------------------------------
 
     def normalize_command(self, message):
-
         msg = message.lower().strip()
 
-        replacements = {
-            "could you": "",
-            "can you": "",
-            "would you": "",
-            "please": "",
-            "for me": "",
-            "hey": "",
-            "jeroo": "",
-            "jaroo": "",
-        }
+        # Remove wake-name / polite prefixes only from the beginning.
+        # This avoids damaging normal words elsewhere in a sentence.
+        prefix_patterns = [
+            r"^(?:hey\s+)?(?:jeroo|jerro|jaroo)\b[\s,.:;!?-]*",
+            r"^(?:please)\b[\s,.:;!?-]*",
+            r"^(?:can you|could you|would you)\b[\s,.:;!?-]*",
+        ]
 
-        for old, new in replacements.items():
+        changed = True
 
-            msg = msg.replace(old, new)
+        while changed:
+            changed = False
+
+            for pattern in prefix_patterns:
+                cleaned = re.sub(
+                    pattern,
+                    "",
+                    msg,
+                    count=1,
+                    flags=re.IGNORECASE
+                )
+
+                if cleaned != msg:
+                    msg = cleaned.strip()
+                    changed = True
+
+        # Clean punctuation that may remain after a prefix.
+        msg = re.sub(
+            r"^[\s,.:;!?-]+",
+            "",
+            msg
+        )
+
+        # "for me" is normally a harmless trailing polite phrase.
+        msg = re.sub(
+            r"\s+for me[\s,.:;!?-]*$",
+            "",
+            msg
+        )
 
         return " ".join(msg.split())
 
     # --------------------------------------------------
-    # DETECT USEFUL MEMORY
+    # CLEAN MEMORY TEXT
+    # --------------------------------------------------
+
+    def clean_memory_text(self, text):
+        text = text.strip()
+        text = re.sub(r"\s+", " ", text)
+        return text.rstrip(".!?")
+
+    # --------------------------------------------------
+    # DETECT USEFUL LONG-TERM MEMORY
     # --------------------------------------------------
 
     def detect_memory(self, message):
-
-        text = message.strip()
+        text = self.clean_memory_text(message)
         lower = text.lower()
 
+        # These patterns are intentionally limited to information that is
+        # likely to still be useful in future conversations. This avoids
+        # permanently storing temporary statements such as "I am tired".
         memory_patterns = [
-
             "my name is ",
-            "i am ",
-            "i'm ",
             "i use ",
             "i like ",
             "i love ",
@@ -60,47 +120,85 @@ class Router:
             "i study ",
             "i work with ",
             "i live in ",
+            "my college is ",
+            "my course is ",
+            "my project is ",
         ]
 
         for pattern in memory_patterns:
-
             if lower.startswith(pattern):
-
                 return text
 
         return None
 
     # --------------------------------------------------
-    # MEMORY COMMANDS
+    # MEMORY / CONVERSATION COMMANDS
     # --------------------------------------------------
 
     def handle_memory_command(self, message):
-
         normalized = self.normalize_command(
             message
         )
+
+        # ----------------------------------------------
+        # CLEAR CONVERSATION CONTEXT ONLY
+        # ----------------------------------------------
+
+        if normalized in [
+            "clear conversation",
+            "clear conversation history",
+            "forget this conversation",
+            "new conversation",
+            "start new conversation",
+        ]:
+            self.brain.clear_history()
+
+            return (
+                "🧹 Conversation context cleared. "
+                "Your saved long-term memories are still there."
+            )
 
         # ----------------------------------------------
         # REMEMBER SOMETHING
         # ----------------------------------------------
 
         if normalized.startswith("remember "):
+            information = message.strip()
 
-            information = normalized.replace(
-                "remember ",
+            # Remove common wake/polite words without forcing the stored
+            # memory to lowercase.
+            information = re.sub(
+                r"^(hey\s+)?(jeroo|jaroo)[,\s]*",
                 "",
-                1
-            ).strip()
+                information,
+                flags=re.IGNORECASE
+            )
+
+            information = re.sub(
+                r"^please\s+",
+                "",
+                information,
+                flags=re.IGNORECASE
+            )
+
+            information = re.sub(
+                r"^remember\s+",
+                "",
+                information,
+                flags=re.IGNORECASE
+            )
+
+            information = self.clean_memory_text(
+                information
+            )
 
             if not information:
-
                 return (
                     "What would you like me "
                     "to remember?"
                 )
 
             if self.memory.add(information):
-
                 return (
                     "🧠 Got it. I'll remember that: "
                     + information
@@ -111,22 +209,76 @@ class Router:
             )
 
         # ----------------------------------------------
+        # FORGET EVERYTHING
+        # ----------------------------------------------
+
+        if normalized in [
+            "forget everything",
+            "clear memory",
+            "clear memories",
+            "delete my memories",
+        ]:
+            self.memory.clear()
+
+            return (
+                "🧹 I've cleared all saved "
+                "long-term memories."
+            )
+
+        # ----------------------------------------------
+        # FORGET ONE MEMORY
+        # ----------------------------------------------
+
+        if normalized.startswith("forget "):
+            information = normalized.replace(
+                "forget ",
+                "",
+                1
+            ).strip()
+
+            if not information:
+                return "What would you like me to forget?"
+
+            result = self.memory.remove_best_match(
+                information
+            )
+
+            if result is None:
+                return (
+                    "🧠 I couldn't find a saved memory "
+                    "matching that."
+                )
+
+            if isinstance(result, list):
+                return (
+                    "I found more than one possible memory. "
+                    "Tell me the exact one to forget:\n\n"
+                    + "\n".join(
+                        f"• {item}"
+                        for item in result
+                    )
+                )
+
+            return (
+                "🧹 Forgotten: "
+                + result
+            )
+
+        # ----------------------------------------------
         # SHOW MEMORIES
         # ----------------------------------------------
 
         if normalized in [
-
             "what do you remember",
+            "what do you remember about me",
+            "what do you know about me",
             "show my memories",
             "show memories",
             "my memories",
-
         ]:
-
             memories = self.memory.get_all()
 
             if not memories:
-
                 return (
                     "🧠 I don't have any saved "
                     "memories yet."
@@ -140,135 +292,2099 @@ class Router:
                 )
             )
 
+        return None
+
+    # --------------------------------------------------
+    # SHORT-TERM ACTION CONTEXT
+    # --------------------------------------------------
+
+    def extract_app_action(self, message):
+        normalized = self.normalize_command(
+            message
+        )
+
+        patterns = [
+            (
+                "open",
+                r"^(?:open|launch|start|run)\s+(.+)$"
+            ),
+            (
+                "close",
+                r"^(?:close|quit|exit)\s+(.+)$"
+            ),
+            (
+                "switch",
+                r"^(?:switch to|focus|go to)\s+(.+)$"
+            ),
+        ]
+
+        for action, pattern in patterns:
+            match = re.match(
+                pattern,
+                normalized
+            )
+
+            if match:
+                target = match.group(1).strip()
+
+                if target:
+                    return action, target
+
+        return None, None
+
+    def remember_local_action(self, command):
+        normalized = self.normalize_command(
+            command
+        )
+
+        action, target = self.extract_app_action(
+            normalized
+        )
+
+        if target:
+            self.context.remember_app(
+                target
+            )
+
+        # Only harmless/repeatable operations are eligible for
+        # "do that again". Closing apps and power commands are excluded.
+        safe_prefixes = (
+            "open ",
+            "launch ",
+            "start ",
+            "run ",
+            "switch to ",
+            "focus ",
+            "go to ",
+            "search google ",
+            "search google for ",
+            "search youtube ",
+            "search youtube for ",
+        )
+
+        safe_exact = {
+            "volume up",
+            "increase volume",
+            "turn volume up",
+            "volume down",
+            "decrease volume",
+            "turn volume down",
+            "mute",
+            "mute volume",
+            "unmute",
+            "take screenshot",
+            "take a screenshot",
+            "capture screen",
+        }
+
+        if (
+            normalized.startswith(safe_prefixes)
+            or normalized in safe_exact
+        ):
+            self.context.remember_safe_command(
+                normalized
+            )
+
+    def app_name_from_process(self, process):
+        process = (
+            process
+            or ""
+        ).strip().lower()
+
+        process = re.sub(
+            r"\.exe$",
+            "",
+            process
+        )
+
+        aliases = {
+            "chrome": "chrome",
+            "code": "visual studio code",
+            "spotify": "spotify",
+            "discord": "discord",
+            "msedge": "edge",
+            "notepad": "notepad",
+            "calculatorapp": "calculator",
+            "powershell": "powershell",
+            "explorer": "file explorer",
+        }
+
+        return aliases.get(
+            process,
+            process
+        )
+
+    def handle_context_followup(self, message):
+        normalized = self.normalize_command(
+            message
+        )
+
         # ----------------------------------------------
-        # CLEAR MEMORIES
+        # CANCEL PENDING CONTEXT / MULTI-CLOSE
         # ----------------------------------------------
 
         if normalized in [
-
-            "forget everything",
-            "clear memory",
-            "clear memories",
-            "delete my memories",
-
+            "cancel",
+            "cancel that",
+            "cancel close",
+            "cancel closing",
+            "do not close it",
+            "dont close it",
+            "do not close them",
+            "dont close them",
         ]:
+            if (
+                self.pending_context_close
+                or self.pending_multi_close
+            ):
+                self.pending_context_close = None
+                self.pending_multi_close = None
+                return "Okay, I cancelled the close request."
 
-            self.memory.clear()
+        # ----------------------------------------------
+        # CONFIRM "CLOSE IT"
+        # ----------------------------------------------
+
+        if normalized in [
+            "confirm close it",
+            "yes close it",
+            "confirm it",
+        ]:
+            if self.pending_context_close:
+                app_name = self.pending_context_close
+                self.pending_context_close = None
+
+                return self.commands.launcher.close_app(
+                    app_name
+                )
+
+        # ----------------------------------------------
+        # CONFIRM MULTIPLE APP CLOSES
+        # ----------------------------------------------
+
+        if normalized in [
+            "confirm close apps",
+            "confirm close them",
+            "yes close them",
+            "close them",
+        ]:
+            if self.pending_multi_close:
+                actions = self.pending_multi_close
+                self.pending_multi_close = None
+
+                results = []
+
+                for action in actions:
+                    response = self.commands.execute(
+                        action
+                    )
+
+                    results.append(
+                        response
+                        or f"I couldn't run: {action}."
+                    )
+
+                return "\n".join(
+                    f"• {result}"
+                    for result in results
+                )
+
+        # ----------------------------------------------
+        # APP PRONOUN FOLLOW-UPS
+        # ----------------------------------------------
+
+        last_app = self.context.last_app
+
+        if normalized in [
+            "close it",
+            "close that",
+            "close that app",
+            "quit it",
+            "exit it",
+        ]:
+            if not last_app:
+                return (
+                    "I don't have a recent app to refer to. "
+                    "Tell me the app name first."
+                )
+
+            self.pending_context_close = last_app
 
             return (
-                "🧹 I've cleared all "
-                "saved memories."
+                f"You mean {last_app}. "
+                "Say 'confirm close it' to close it, "
+                "or 'cancel' to keep it open."
+            )
+
+        if normalized in [
+            "open it again",
+            "reopen it",
+            "open that again",
+            "launch it again",
+        ]:
+            if not last_app:
+                return (
+                    "I don't have a recent app to reopen yet."
+                )
+
+            command = f"open {last_app}"
+
+            response = self.commands.execute(
+                command
+            )
+
+            if response is not None:
+                self.remember_local_action(
+                    command
+                )
+
+            return response
+
+        if normalized in [
+            "switch to it",
+            "go to it",
+            "focus it",
+            "go back to it",
+            "switch back to it",
+        ]:
+            if not last_app:
+                return (
+                    "I don't have a recent app to switch to yet."
+                )
+
+            command = f"switch to {last_app}"
+
+            response = self.commands.execute(
+                command
+            )
+
+            if response is not None:
+                self.remember_local_action(
+                    command
+                )
+
+            return response
+
+        # ----------------------------------------------
+        # REPEAT LAST SAFE PC ACTION
+        # ----------------------------------------------
+
+        if normalized in [
+            "do that again",
+            "do it again",
+            "repeat that",
+            "repeat last action",
+        ]:
+            command = self.context.last_safe_command
+
+            if not command:
+                return (
+                    "I don't have a safe recent PC action "
+                    "to repeat yet."
+                )
+
+            response = self.commands.execute(
+                command
+            )
+
+            if response is not None:
+                self.remember_local_action(
+                    command
+                )
+
+            return response
+
+        return None
+
+    # --------------------------------------------------
+    # CONVERSATIONAL FOLLOW-UP CONTEXT
+    # --------------------------------------------------
+
+    def is_conversation_followup(self, message):
+        normalized = self.normalize_command(message)
+
+        exact = {
+            "continue", "go on", "keep going", "tell me more", "more",
+            "explain more", "explain that", "explain it",
+            "explain that again", "explain it again",
+            "explain that simpler", "explain it simpler",
+            "make it simpler", "simplify that", "simplify it",
+            "give me an example", "give an example", "example",
+            "another example", "give me another example",
+            "why", "why is that", "how", "how so",
+            "what do you mean", "what does that mean",
+            "summarize that", "summarise that",
+            "make it shorter", "shorter"
+        }
+
+        if normalized in exact:
+            return True
+
+        prefixes = (
+            "explain that ", "explain it ", "make that ", "make it ",
+            "give me an example ", "give another example ",
+            "tell me more about ", "continue from ",
+            "why does that ", "how does that ", "what about that "
+        )
+
+        return normalized.startswith(prefixes)
+
+    def handle_conversation_followup(self, message):
+        if not self.is_conversation_followup(message):
+            return None
+
+        prompt = self.conversation_context.build_followup_prompt(
+            message
+        )
+
+        if prompt is None:
+            return (
+                "I don't have enough conversation context yet. "
+                "Ask me something first, then use a follow-up like "
+                "'explain that simpler' or 'give me an example'."
+            )
+
+        relevant_memories = self.memory.context_for(
+            self.conversation_context.last_user_message or message,
+            limit=8
+        )
+
+        try:
+            response = self.brain.get_response(
+                prompt,
+                memories=relevant_memories
+            )
+
+            self.conversation_context.remember_exchange(
+                message,
+                response
+            )
+
+            return response
+
+        except Exception as error:
+            print(
+                "Conversation follow-up error:",
+                error
+            )
+            return None
+
+    def remember_ai_exchange(self, user_message, response):
+        if response is not None:
+            self.conversation_context.remember_exchange(
+                user_message,
+                response
+            )
+
+    # --------------------------------------------------
+    # ACTIVE WINDOW / CONTEXT COMMANDS
+    # --------------------------------------------------
+
+    def handle_active_window_command(self, message):
+        normalized = self.normalize_command(message)
+
+        if normalized in [
+            "cancel close",
+            "cancel closing",
+            "do not close it",
+            "dont close it",
+        ]:
+            self.pending_active_close = None
+            return "Okay, I won't close it."
+
+        if normalized in [
+            "confirm close this app",
+            "confirm close current app",
+            "yes close this app",
+            "yes close it",
+        ]:
+            if not self.pending_active_close:
+                return "There isn't a pending app-close request."
+
+            info = self.pending_active_close
+            self.pending_active_close = None
+
+            return self.commands.launcher.close_process(
+                info.get("process"),
+                display_name=info.get("title") or info.get("process")
+            )
+
+        if normalized in [
+            "what app am i using",
+            "what application am i using",
+            "what app is this",
+            "what window is active",
+            "what is the active window",
+            "which app is open",
+            "which window am i on",
+        ]:
+            info = self.screen.get_active_window_info()
+
+            if not info:
+                return "I couldn't identify the active window."
+
+            title = info.get("title") or "Untitled window"
+            process = info.get("process") or "unknown process"
+
+            app_name = self.app_name_from_process(
+                process
+            )
+
+            if app_name:
+                self.context.remember_app(
+                    app_name
+                )
+
+            return f"You're currently on {title} ({process})."
+
+        if normalized in [
+            "close this app",
+            "close current app",
+            "close this window",
+            "close the current app",
+        ]:
+            info = self.screen.get_active_window_info()
+
+            if not info:
+                return "I couldn't identify the active application."
+
+            process = (info.get("process") or "").lower()
+            title = info.get("title") or info.get("process") or "this app"
+
+            protected = {
+                "python", "pythonw", "explorer", "dwm", "system",
+                "winlogon", "csrss", "services", "lsass", "svchost"
+            }
+
+            if process in protected or "jeroo" in title.lower():
+                return "I won't close that because it may be Jerro or an important Windows process."
+
+            self.pending_active_close = info
+
+            return (
+                f"The active app is {title}. "
+                "Say 'confirm close this app' to close it, or 'cancel close' to keep it open."
             )
 
         return None
+
+    # --------------------------------------------------
+    # REMEMBERED SCREEN CONTEXT
+    # --------------------------------------------------
+
+    def is_screen_refresh_request(self, message):
+        normalized = self.normalize_command(
+            message
+        )
+
+        return normalized in {
+            "refresh the screen",
+            "refresh screen",
+            "look again",
+            "look at it again",
+            "check the screen again",
+            "analyze screen again",
+            "analyse screen again",
+            "analyze it again",
+            "analyse it again",
+            "take another look",
+        }
+
+    def is_screen_context_followup(self, message):
+        normalized = self.normalize_command(
+            message
+        )
+
+        if not self.screen_context.is_fresh():
+            return False
+
+        exact = {
+            "what does that error mean",
+            "what does the error mean",
+            "explain that error",
+            "why did that error happen",
+            "why is that error happening",
+            "how do i fix that",
+            "how do i fix it",
+            "how can i fix that",
+            "what should i do now",
+            "what should i do next",
+            "what do i do next",
+            "where should i click",
+            "where do i click",
+            "what should i click",
+            "which button should i click",
+            "which one should i click",
+            "explain the code on the screen",
+            "explain that code",
+            "what does that code do",
+            "what is wrong with that code",
+            "what is wrong here",
+            "what is the problem here",
+            "tell me more about that",
+            "explain that part",
+            "what does that mean",
+        }
+
+        if normalized in exact:
+            return True
+
+        phrases = [
+            "that error",
+            "the error",
+            "that button",
+            "that code",
+            "on the screen",
+            "from the screen",
+            "what you saw",
+            "what you just saw",
+            "that window",
+            "this screen",
+        ]
+
+        return any(
+            phrase in normalized
+            for phrase in phrases
+        )
+
+    def handle_screen_context_followup(self, message):
+        normalized = self.normalize_command(
+            message
+        )
+
+        if normalized in {
+            "forget the screen",
+            "forget screen",
+            "clear screen context",
+            "clear screen memory",
+        }:
+            self.screen_context.clear()
+
+            return (
+                "🧹 I cleared the remembered screen context."
+            )
+
+        if self.is_screen_refresh_request(
+            message
+        ):
+            return self.analyze_screen(
+                "Analyze the current screen again and tell me what changed "
+                "or what is important now."
+            )
+
+        if not self.is_screen_context_followup(
+            message
+        ):
+            return None
+
+        context = self.screen_context.get()
+
+        if not context:
+            return None
+
+        prompt = (
+            "The user is asking a follow-up about a screen you analyzed "
+            "recently. Do not claim you can still see the live screen. "
+            "Use only the remembered analysis below. If the answer depends "
+            "on something that may have changed, tell the user to ask you "
+            "to 'look again'.\n\n"
+            "Previous screen-analysis request:\n"
+            f"{context.get('original_request') or '(not recorded)'}\n\n"
+            "Remembered screen analysis:\n"
+            f"{context.get('analysis')}\n\n"
+            "Foreground window at that time:\n"
+            f"{context.get('window_title') or 'Unknown'} "
+            f"({context.get('process_name') or 'unknown process'})\n\n"
+            "User follow-up:\n"
+            f"{message}\n\n"
+            "Answer the follow-up directly and concisely."
+        )
+
+        relevant_memories = self.memory.context_for(
+            message,
+            limit=5
+        )
+
+        response = self.brain.get_response(
+            prompt,
+            memories=relevant_memories
+        )
+
+        self.conversation_context.remember_exchange(
+            message,
+            response
+        )
+
+        return response
+
+    # --------------------------------------------------
+    # SCREEN -> SAFE ACTION
+    # --------------------------------------------------
+
+    def is_screen_action_request(self, message):
+        normalized = self.normalize_command(
+            message
+        )
+
+        exact = {
+            "do the next step",
+            "do that for me",
+            "can you do that",
+            "do it for me",
+            "take the next step",
+            "perform the next step",
+            "fix it for me",
+        }
+
+        if normalized in exact:
+            return True
+
+        phrases = (
+            "based on the screen",
+            "based on what you saw",
+            "from what you saw",
+            "do the next step",
+            "can you do it",
+            "do that for me",
+        )
+
+        return any(
+            phrase in normalized
+            for phrase in phrases
+        )
+
+    def plan_screen_action(self, message):
+        context = self.screen_context.get()
+
+        if not context:
+            return (
+                "I don't have a recent screen analysis to act from. "
+                "Ask me to look at the screen first."
+            )
+
+        prompt = self.screen_actions.build_planning_prompt(
+            context,
+            message
+        )
+
+        response = self.brain.get_response(
+            prompt,
+            memories=None
+        )
+
+        command = None
+
+        for line in str(response).splitlines():
+            if line.strip().upper().startswith(
+                "COMMAND:"
+            ):
+                command = line.split(
+                    ":",
+                    1
+                )[1].strip()
+                break
+
+        if (
+            not command
+            or command.upper() == "NONE"
+        ):
+            return (
+                "I can explain the next step, but I don't have a safe "
+                "supported PC action for that yet."
+            )
+
+        safe_command = self.screen_actions.sanitize(
+            command
+        )
+
+        if not safe_command:
+            return (
+                "I found a possible action, but I won't run it because "
+                "it falls outside the safe screen-action controls."
+            )
+
+        self.pending_screen_action = safe_command
+
+        return (
+            f"From the screen context, I can run: '{safe_command}'. "
+            "Say 'confirm screen action' to run it, or 'cancel' to stop."
+        )
+
+    def handle_pending_screen_action(self, message):
+        normalized = self.normalize_command(
+            message
+        )
+
+        if normalized in {
+            "cancel",
+            "cancel that",
+            "cancel screen action",
+            "do not do it",
+            "dont do it",
+        }:
+            if self.pending_screen_action:
+                self.pending_screen_action = None
+
+                return (
+                    "Okay, I cancelled the screen action."
+                )
+
+        if normalized in {
+            "confirm screen action",
+            "yes do it",
+            "confirm that action",
+        }:
+            if not self.pending_screen_action:
+                return (
+                    "There isn't a pending screen action to confirm."
+                )
+
+            command = self.pending_screen_action
+            self.pending_screen_action = None
+
+            response = self.commands.execute(
+                command
+            )
+
+            if response is None:
+                return (
+                    f"I couldn't run the planned action: {command}."
+                )
+
+            self.remember_local_action(
+                command
+            )
+
+            return response
+
+        return None
+
+    # --------------------------------------------------
+    # SCREEN-AWARE REQUEST DETECTION
+    # --------------------------------------------------
+
+    def is_screen_request(self, message):
+        normalized = self.normalize_command(message)
+
+        exact_phrases = [
+            "what is on my screen",
+            "what's on my screen",
+            "whats on my screen",
+            "look at my screen",
+            "analyze my screen",
+            "analyse my screen",
+            "explain my screen",
+            "read my screen",
+            "describe my screen",
+            "help me with my screen",
+            "what should i click here",
+            "what do i click here",
+        ]
+
+        if normalized in exact_phrases:
+            return True
+
+        screen_words = [
+            "screen",
+            "on screen",
+            "on my display",
+        ]
+
+        action_words = [
+            "look",
+            "analyze",
+            "analyse",
+            "explain",
+            "read",
+            "describe",
+            "check",
+            "see",
+            "error",
+            "click",
+            "help",
+            "what",
+        ]
+
+        if any(word in normalized for word in screen_words):
+            return any(word in normalized for word in action_words)
+
+        # These common phrases usually refer to something visible right now.
+        contextual_phrases = [
+            "explain this error",
+            "what does this error mean",
+            "what should i click",
+            "where should i click",
+            "what do i click",
+            "help me with this",
+            "help with this",
+            "explain this",
+            "fix this",
+            "why is this not working",
+            "what is this",
+        ]
+
+        return any(
+            phrase in normalized
+            for phrase in contextual_phrases
+        )
+
+    # --------------------------------------------------
+    # ANALYZE CURRENT SCREEN
+    # --------------------------------------------------
+
+    def analyze_screen(self, message):
+        image_bytes, error = self.screen.capture_screen_bytes()
+
+        if error:
+            return error
+
+        relevant_memories = self.memory.context_for(
+            message,
+            limit=5
+        )
+
+        active_window = self.screen.get_active_window_info()
+        screen_message = message
+
+        title = ""
+        process = ""
+
+        if active_window:
+            title = active_window.get("title") or "Unknown title"
+            process = active_window.get("process") or "Unknown process"
+
+            screen_message += (
+                "\n\nDesktop context: the current foreground window is "
+                f"'{title}' and its process is '{process}'. "
+                "Use this only as supporting context for what is visible."
+            )
+
+        response = self.brain.get_screen_response(
+            screen_message,
+            image_bytes,
+            memories=relevant_memories
+        )
+
+        # Keep only the text interpretation for five minutes.
+        # The screenshot bytes are not stored by ScreenContext.
+        if response:
+            self.screen_context.remember(
+                analysis=response,
+                original_request=message,
+                window_title=title,
+                process_name=process
+            )
+
+            self.conversation_context.remember_exchange(
+                message,
+                response
+            )
+
+        return response
+
+
+    # --------------------------------------------------
+    # CUSTOM ROUTINES
+    # --------------------------------------------------
+
+    def parse_routine_actions(self, action_text):
+        text = self.normalize_command(
+            action_text
+        )
+
+        if not text:
+            return []
+
+        action_verbs = (
+            "open ", "launch ", "start ", "run ",
+            "close ", "quit ", "exit ",
+            "switch to ", "focus ", "go to ",
+            "search google ", "search google for ",
+            "search youtube ", "search youtube for ",
+            "volume up", "volume down", "mute",
+            "take a screenshot"
+        )
+
+        # First support the same shorthand as multi-action commands:
+        # "open chrome and spotify"
+        inherited = self.split_multi_action(text)
+
+        if inherited:
+            return inherited
+
+        # For richer routines:
+        # "open chrome, open spotify, then open vs code"
+        parts = re.split(
+            r"\s*(?:;|,|\band then\b|\bthen\b|\band(?=\s+"
+            r"(?:open|launch|start|run|close|quit|exit|"
+            r"switch to|focus|go to|search google|"
+            r"search youtube|volume|mute|take)))\s*",
+            text
+        )
+
+        actions = [
+            part.strip()
+            for part in parts
+            if part.strip()
+        ]
+
+        if len(actions) == 1:
+            return actions
+
+        valid = []
+
+        for action in actions:
+            if action.startswith(action_verbs):
+                valid.append(action)
+            else:
+                return []
+
+        return valid
+
+    def execute_routine(self, name):
+        actions = self.automation.get_routine(
+            name
+        )
+
+        if actions is None:
+            return None
+
+        results = []
+
+        for action in actions:
+            response = self.commands.execute(
+                action
+            )
+
+            if response is None:
+                results.append(
+                    f"I couldn't run: {action}."
+                )
+            else:
+                results.append(response)
+
+        return (
+            f"⚙️ Routine '{name}' finished:\n"
+            + "\n".join(
+                f"• {result}"
+                for result in results
+            )
+        )
+
+    def handle_routine_command(self, message):
+        normalized = self.normalize_command(
+            message
+        )
+
+        if normalized in [
+            "show routines",
+            "show my routines",
+            "list routines",
+            "list my routines",
+            "what routines do i have",
+        ]:
+            return self.automation.list_routines()
+
+        create_match = re.match(
+            r"^(?:create|make|save)\s+(?:a\s+)?routine\s+"
+            r"(.+?)\s+(?:with|that does)\s+(.+)$",
+            normalized
+        )
+
+        if create_match:
+            name = create_match.group(1).strip()
+            action_text = create_match.group(2).strip()
+
+            actions = self.parse_routine_actions(
+                action_text
+            )
+
+            if not actions:
+                return (
+                    "I couldn't understand the routine actions. "
+                    "Try: create routine coding mode with "
+                    "open VS Code and Chrome"
+                )
+
+            return self.automation.save_routine(
+                name,
+                actions
+            )
+
+        delete_match = re.match(
+            r"^(?:delete|remove)\s+(?:my\s+)?routine\s+(.+)$",
+            normalized
+        )
+
+        if delete_match:
+            return self.automation.delete_routine(
+                delete_match.group(1)
+            )
+
+        show_match = re.match(
+            r"^(?:show|describe)\s+(?:my\s+)?routine\s+(.+)$",
+            normalized
+        )
+
+        if show_match:
+            return self.automation.describe_routine(
+                show_match.group(1)
+            )
+
+        explicit_run = re.match(
+            r"^(?:run|start|activate)\s+(?:my\s+)?routine\s+(.+)$",
+            normalized
+        )
+
+        if explicit_run:
+            name = explicit_run.group(1).strip()
+
+            result = self.execute_routine(
+                name
+            )
+
+            if result is None:
+                return (
+                    f"I couldn't find a routine "
+                    f"called '{name}'."
+                )
+
+            return result
+
+        # Natural shortcut:
+        # "start coding mode" / "run coding mode"
+        natural_run = re.match(
+            r"^(?:run|start|activate)\s+(.+)$",
+            normalized
+        )
+
+        if natural_run:
+            name = natural_run.group(1).strip()
+
+            if self.automation.routine_exists(
+                name
+            ):
+                return self.execute_routine(
+                    name
+                )
+
+        # Also allow just:
+        # "coding mode"
+        if normalized.endswith(" mode"):
+            if self.automation.routine_exists(
+                normalized
+            ):
+                return self.execute_routine(
+                    normalized
+                )
+
+        return None
+
+
+    # --------------------------------------------------
+    # NOTES / REMINDERS / MULTI-ACTION AUTOMATION
+    # --------------------------------------------------
+
+    def handle_automation_command(self, message):
+        normalized = self.normalize_command(message)
+
+        note_prefixes = [
+            "create a note saying ",
+            "create note saying ",
+            "make a note saying ",
+            "note that ",
+            "save a note saying ",
+        ]
+
+        for prefix in note_prefixes:
+            if normalized.startswith(prefix):
+                note = normalized[len(prefix):].strip()
+                return self.automation.add_note(note)
+
+        if normalized in [
+            "show my notes", "show notes",
+            "list my notes", "list notes",
+        ]:
+            return self.automation.list_notes()
+
+        if normalized in [
+            "clear my notes", "clear notes",
+            "delete all notes",
+        ]:
+            return self.automation.clear_notes()
+
+        reminder = re.match(
+            r"^remind me in\s+(\d+)\s*"
+            r"(minute|minutes|hour|hours)\s+to\s+(.+)$",
+            normalized
+        )
+
+        if reminder:
+            amount = int(reminder.group(1))
+            unit = reminder.group(2)
+            task = reminder.group(3).strip()
+
+            minutes = amount * 60 if unit.startswith("hour") else amount
+
+            return self.automation.add_reminder(
+                task,
+                minutes
+            )
+
+        if normalized in [
+            "show reminders", "show my reminders",
+            "list reminders", "list my reminders",
+        ]:
+            return self.automation.list_reminders()
+
+        if normalized in [
+            "clear reminders", "clear my reminders",
+            "delete all reminders",
+        ]:
+            return self.automation.clear_reminders()
+
+        return None
+
+    def split_multi_action(self, message):
+        normalized = self.normalize_command(message)
+
+        action_verbs = (
+            "open ", "launch ", "start ", "run ",
+            "close ", "quit ", "exit ",
+            "switch to ", "focus ", "go to ",
+            "search google ", "search google for ",
+            "search youtube ", "search youtube for "
+        )
+
+        matched_verb = None
+
+        for verb in action_verbs:
+            if normalized.startswith(verb):
+                matched_verb = verb
+                break
+
+        if not matched_verb:
+            return None
+
+        if not re.search(
+            r"\s+(?:and then|then|and)\s+",
+            normalized
+        ):
+            return None
+
+        parts = [
+            part.strip()
+            for part in re.split(
+                r"\s+(?:and then|then|and)\s+",
+                normalized
+            )
+            if part.strip()
+        ]
+
+        if len(parts) < 2 or len(parts) > 6:
+            return None
+
+        actions = [parts[0]]
+
+        for part in parts[1:]:
+            if part.startswith(action_verbs):
+                actions.append(part)
+            else:
+                actions.append(matched_verb + part)
+
+        return actions
+
+    def run_multi_action(self, message):
+        actions = self.split_multi_action(
+            message
+        )
+
+        if not actions:
+            return None
+
+        # Closing several applications at once gets an extra confirmation.
+        close_actions = [
+            action
+            for action in actions
+            if action.startswith(
+                ("close ", "quit ", "exit ")
+            )
+        ]
+
+        if len(close_actions) >= 2:
+            self.pending_multi_close = close_actions
+
+            names = []
+
+            for action in close_actions:
+                _, target = self.extract_app_action(
+                    action
+                )
+
+                if target:
+                    names.append(target)
+
+            return (
+                "You're asking me to close multiple apps"
+                + (
+                    ": " + ", ".join(names)
+                    if names
+                    else ""
+                )
+                + ". Say 'confirm close apps' to continue, "
+                "or 'cancel' to stop."
+            )
+
+        results = []
+
+        for action in actions:
+            response = self.commands.execute(
+                action
+            )
+
+            if response is None:
+                results.append(
+                    f"I couldn't run: {action}."
+                )
+            else:
+                results.append(
+                    response
+                )
+
+                self.remember_local_action(
+                    action
+                )
+
+        return "\n".join(
+            f"• {result}"
+            for result in results
+        )
+
+    # --------------------------------------------------
+    # SMART NATURAL-LANGUAGE ROUTING
+    # --------------------------------------------------
+
+    def smart_route_request(self, message):
+        decision = self.smart_router.rule_route(message)
+
+        if decision is None:
+            return None
+
+        route = decision.get("route")
+        query = decision.get("query") or message
+
+        if route == "screen":
+            return self.analyze_screen(query)
+
+        if route == "web":
+            results = self.web_research.search(query, limit=6)
+
+            if not results:
+                return "I couldn't reach web search right now."
+
+            prompt = self.web_research.build_research_prompt(
+                query,
+                results
+            )
+
+            response = self.brain.get_response(
+                prompt,
+                memories=None
+            )
+
+            self.remember_ai_exchange(
+                message,
+                response
+            )
+
+            return response
+
+        if route == "file":
+            return self.handle_file_command(message)
+
+        if route == "coding":
+            return self.handle_coding_command(message)
+
+        if route == "project":
+            return self.handle_project_command(message)
+
+        return None
+
+    # --------------------------------------------------
+    # WEB RESEARCH
+    # --------------------------------------------------
+
+    def handle_web_research(self, message):
+        normalized = self.normalize_command(message)
+
+        prefixes = (
+            "search the web for ",
+            "search web for ",
+            "web search ",
+            "research ",
+            "look up ",
+            "lookup ",
+            "find online ",
+        )
+
+        query = None
+
+        for prefix in prefixes:
+            if normalized.startswith(prefix):
+                query = message[len(prefix):].strip()
+                break
+
+        if not query:
+            return None
+
+        if not query:
+            return "Tell me what you want me to research."
+
+        results = self.web_research.search(
+            query,
+            limit=6
+        )
+
+        if not results:
+            return (
+                "I couldn't reach web search right now. "
+                "Check the internet connection and try again."
+            )
+
+        prompt = self.web_research.build_research_prompt(
+            query,
+            results
+        )
+
+        response = self.brain.get_response(
+            prompt,
+            memories=None
+        )
+
+        self.remember_ai_exchange(
+            message,
+            response
+        )
+
+        return response
+
+    def is_web_research_request(self, message):
+        normalized = self.normalize_command(message)
+
+        return normalized.startswith((
+            "search the web for ",
+            "search web for ",
+            "web search ",
+            "research ",
+            "look up ",
+            "lookup ",
+            "find online ",
+        ))
+
+    # --------------------------------------------------
+    # LOCAL FILE ASSISTANT
+    # --------------------------------------------------
+
+    def handle_file_command(self, message):
+        normalized = self.normalize_command(message)
+
+        if normalized in {
+            "show recent files",
+            "show my recent files",
+            "recent files",
+            "files from today",
+            "show files from today",
+        }:
+            results = self.files.recent_files(
+                hours=24
+            )
+
+            return self.files.format_results(
+                results,
+                "Recent files"
+            )
+
+        match = re.match(
+            r"^(?:find|search for|locate)\s+(?:my\s+)?(.+?)(?:\s+file)?$",
+            normalized
+        )
+
+        if match:
+            query = match.group(1).strip()
+
+            # Avoid stealing coding-symbol searches.
+            if not query.startswith(
+                ("function ", "class ", "method ", "symbol ")
+            ):
+                results = self.files.find_files(query)
+
+                return self.files.format_results(
+                    results,
+                    f"Matches for '{query}'"
+                )
+
+        match = re.match(
+            r"^(?:open|read)\s+(?:file\s+)?(?:number\s+)?(\d+)$",
+            normalized
+        )
+
+        if match:
+            path = self.files.resolve_last_result(
+                match.group(1)
+            )
+
+            if not path:
+                return (
+                    "I don't have that numbered file in the "
+                    "current search results."
+                )
+
+            if normalized.startswith("open"):
+                return self.files.open_path(path)
+
+            text, error = self.files.read_path(path)
+
+            if error:
+                return error
+
+            prompt = (
+                f"Summarize this local file for the user.\n\n"
+                f"File: {path.name}\n\n{text}"
+            )
+
+            response = self.brain.get_response(
+                prompt,
+                memories=None
+            )
+
+            self.remember_ai_exchange(
+                message,
+                response
+            )
+
+            return response
+
+        return None
+
+    def is_file_request(self, message):
+        normalized = self.normalize_command(message)
+
+        return (
+            normalized in {
+                "show recent files",
+                "show my recent files",
+                "recent files",
+                "files from today",
+                "show files from today",
+            }
+            or normalized.startswith(
+                ("find ", "search for ", "locate ", "open file ", "read file ")
+            )
+            or bool(
+                re.match(r"^(?:open|read)\s+(?:number\s+)?\d+$", normalized)
+            )
+        )
+
+    # --------------------------------------------------
+    # CODING ASSISTANT
+    # --------------------------------------------------
+
+    def handle_coding_command(self, message):
+        normalized = self.normalize_command(message)
+
+        if normalized in {
+            "show project files",
+            "show source files",
+            "list project files",
+            "list source files",
+        }:
+            files, error = self.coding.list_files()
+
+            if error:
+                return error
+
+            return (
+                "📄 Active project files:\n\n"
+                + "\n".join(f"• {name}" for name in files)
+            )
+
+        match = re.match(
+            r"^(?:find|locate|search for)\s+"
+            r"(?:function|class|method|symbol|text)?\s*(.+)$",
+            normalized
+        )
+
+        if match and " file" not in normalized:
+            term = match.group(1).strip()
+            matches, error = self.coding.search_symbol(term)
+
+            if error:
+                return error
+
+            if not matches:
+                return f"I couldn't find '{term}' in the active project."
+
+            return (
+                f"🔎 Matches for '{term}':\n\n"
+                + "\n".join(
+                    f"• {item['file']}:{item['line']} — {item['text']}"
+                    for item in matches
+                )
+            )
+
+        match = re.search(
+            r"(?:explain|analyze|analyse|check|review|read)\s+"
+            r"(?:the\s+)?(?:file\s+)?([\\w./+-]+\\.[a-z0-9]+)",
+            normalized
+        )
+
+        if match:
+            filename = match.group(1)
+            file_data, error = self.coding.read_file(filename)
+
+            if error:
+                return error
+
+            prompt = self.coding.build_file_prompt(
+                message,
+                file_data
+            )
+
+            response = self.brain.get_response(
+                prompt,
+                memories=None
+            )
+
+            self.remember_ai_exchange(
+                message,
+                response
+            )
+
+            return response
+
+        if (
+            "active project" in normalized
+            or "this project" in normalized
+            or "my project" in normalized
+        ) and any(
+            word in normalized
+            for word in (
+                "explain",
+                "analyze",
+                "analyse",
+                "review",
+                "understand",
+                "structure",
+            )
+        ):
+            prompt, error = self.coding.build_project_prompt(
+                message
+            )
+
+            if error:
+                return error
+
+            response = self.brain.get_response(
+                prompt,
+                memories=None
+            )
+
+            self.remember_ai_exchange(
+                message,
+                response
+            )
+
+            return response
+
+        return None
+
+    def is_coding_request(self, message):
+        normalized = self.normalize_command(message)
+
+        coding_terms = (
+            "project files",
+            "source files",
+            "active project",
+            "this project",
+            "my project",
+            "function ",
+            "class ",
+            "method ",
+            "symbol ",
+        )
+
+        code_extensions = (
+            ".py", ".js", ".ts", ".java", ".cpp",
+            ".c", ".html", ".css", ".php"
+        )
+
+        return (
+            any(term in normalized for term in coding_terms)
+            or any(ext in normalized for ext in code_extensions)
+        )
+
+    # --------------------------------------------------
+    # PROJECT / CODING WORKFLOW
+    # --------------------------------------------------
+
+    def handle_project_command(self, message):
+        normalized = self.normalize_command(
+            message
+        )
+
+        project_manager = self.commands.projects
+
+        if normalized in {
+            "scan for projects",
+            "scan projects",
+            "find my projects",
+            "discover projects",
+            "refresh projects",
+        }:
+            found = project_manager.discover_projects()
+
+            return (
+                f"🔎 Project scan finished. "
+                f"I found or refreshed {len(found)} project folder(s).\n\n"
+                + project_manager.list_projects()
+            )
+
+        if normalized in {
+            "show my projects",
+            "show projects",
+            "list my projects",
+            "list projects",
+            "what projects do i have",
+        }:
+            return project_manager.list_projects()
+
+        if normalized in {
+            "show recent projects",
+            "show my recent projects",
+            "recent projects",
+            "what are my recent projects",
+        }:
+            return project_manager.recent_projects()
+
+        if normalized in {
+            "what project am i working on",
+            "what is my current project",
+            "what's my current project",
+            "whats my current project",
+            "show current project",
+            "show active project",
+        }:
+            return project_manager.active_project_info()
+
+        # "open this project in VS Code"
+        match = re.match(
+            r"^open\s+(.+?)\s+in\s+(?:vs code|vscode|code)$",
+            normalized
+        )
+
+        if match:
+            name = match.group(1).strip()
+
+            if name in {
+                "this project",
+                "the project",
+                "current project",
+                "this",
+                "current",
+            }:
+                name = "this"
+
+            return project_manager.open_in_vscode(
+                name
+            )
+
+        # "open the project folder" / "open this project folder"
+        if normalized in {
+            "open the project folder",
+            "open project folder",
+            "open this project folder",
+            "open current project folder",
+            "show project folder",
+            "show this project folder",
+        }:
+            return project_manager.open_project_folder(
+                "this"
+            )
+
+        match = re.match(
+            r"^(?:open|show)\s+(.+?)\s+project\s+folder$",
+            normalized
+        )
+
+        if match:
+            return project_manager.open_project_folder(
+                match.group(1)
+            )
+
+        # "start coding mode for this project"
+        match = re.match(
+            r"^(?:start|open|launch)\s+coding\s+mode"
+            r"(?:\s+for\s+(.+))?$",
+            normalized
+        )
+
+        if match:
+            name = (
+                match.group(1)
+                or "this"
+            ).strip()
+
+            if name in {
+                "this project",
+                "the project",
+                "current project",
+                "this",
+                "current",
+            }:
+                name = "this"
+
+            return project_manager.start_coding_mode(
+                name
+            )
+
+        # "open my AkashAI project"
+        match = re.match(
+            r"^(?:open|launch|start)\s+"
+            r"(?:my\s+)?(.+?)\s+project$",
+            normalized
+        )
+
+        if match:
+            name = match.group(1).strip()
+
+            if name in {
+                "this",
+                "current",
+                "the",
+            }:
+                name = "this"
+
+            return project_manager.open_project(
+                name
+            )
+
+        # "open this project"
+        if normalized in {
+            "open this project",
+            "open current project",
+            "open the project",
+        }:
+            return project_manager.open_project(
+                "this"
+            )
+
+        return None
+
+    def is_project_request(self, message):
+        normalized = self.normalize_command(
+            message
+        )
+
+        project_phrases = (
+            " project",
+            "projects",
+            "coding mode",
+            "project folder",
+        )
+
+        return any(
+            phrase in normalized
+            for phrase in project_phrases
+        )
 
     # --------------------------------------------------
     # MAIN RESPONSE ROUTER
     # --------------------------------------------------
 
     def get_response(self, message):
-
-        # ----------------------------------------------
-        # MEMORY COMMANDS
-        # ----------------------------------------------
-
-        memory_command = (
-            self.handle_memory_command(
-                message
-            )
+        normalized = self.normalize_command(
+            message
         )
 
-        if memory_command:
-
-            return memory_command
-
         # ----------------------------------------------
-        # AUTOMATIC MEMORY DETECTION
+        # WEB RESEARCH
         # ----------------------------------------------
 
-        detected_memory = (
-            self.detect_memory(
+        if self.is_web_research_request(
+            message
+        ):
+            web_response = self.handle_web_research(
                 message
             )
+
+            if web_response is not None:
+                print(
+                    "Jeroo intent: web_research"
+                )
+                return web_response
+
+        # ----------------------------------------------
+        # LOCAL FILE ASSISTANT
+        # ----------------------------------------------
+
+        if self.is_file_request(
+            message
+        ):
+            file_response = self.handle_file_command(
+                message
+            )
+
+            if file_response is not None:
+                print(
+                    "Jeroo intent: file_assistant"
+                )
+                return file_response
+
+        # ----------------------------------------------
+        # CODING ASSISTANT
+        # ----------------------------------------------
+
+        if self.is_coding_request(
+            message
+        ):
+            coding_response = self.handle_coding_command(
+                message
+            )
+
+            if coding_response is not None:
+                print(
+                    "Jeroo intent: coding_assistant"
+                )
+                return coding_response
+
+        # ----------------------------------------------
+        # PROJECT / CODING WORKFLOW
+        # ----------------------------------------------
+
+        if self.is_project_request(
+            message
+        ):
+            project_response = self.handle_project_command(
+                message
+            )
+
+            if project_response is not None:
+                print(
+                    "Jeroo intent: project_workflow"
+                )
+                return project_response
+
+        # ----------------------------------------------
+        # SCREEN ACTION CONFIRMATION / PLANNING
+        # ----------------------------------------------
+
+        pending_screen_response = self.handle_pending_screen_action(
+            message
+        )
+
+        if pending_screen_response is not None:
+            print(
+                "Jeroo intent: screen_action_confirmation"
+            )
+            return pending_screen_response
+
+        if self.is_screen_action_request(
+            message
+        ):
+            print(
+                "Jeroo intent: screen_action_plan"
+            )
+            return self.plan_screen_action(
+                message
+            )
+
+        # ----------------------------------------------
+        # CONTEXTUAL FOLLOW-UP COMMANDS
+        # ----------------------------------------------
+
+        contextual_response = self.handle_context_followup(
+            message
+        )
+
+        if contextual_response is not None:
+            print(
+                "Jeroo intent: contextual_action"
+            )
+            return contextual_response
+
+        screen_context_response = self.handle_screen_context_followup(
+            message
+        )
+
+        if screen_context_response is not None:
+            print(
+                "Jeroo intent: screen_context_followup"
+            )
+            return screen_context_response
+
+        conversation_response = self.handle_conversation_followup(
+            message
+        )
+
+        if conversation_response is not None:
+            print(
+                "Jeroo intent: conversation_followup"
+            )
+            return conversation_response
+
+        smart_response = self.smart_route_request(
+            message
+        )
+
+        if smart_response is not None:
+            print(
+                "Jeroo intent: smart_router"
+            )
+            return smart_response
+
+        intent = self.intent_manager.classify(
+            message=message,
+            normalized=normalized,
+            routine_exists=self.automation.routine_exists
+        )
+
+        print(
+            f"Jeroo intent: {intent}"
+        )
+
+        # ----------------------------------------------
+        # CUSTOM ROUTINES
+        # ----------------------------------------------
+
+        if intent == "routine":
+            response = self.handle_routine_command(
+                message
+            )
+
+            if response is not None:
+                return response
+
+        # ----------------------------------------------
+        # NOTES / REMINDERS
+        # ----------------------------------------------
+
+        if intent == "automation":
+            response = self.handle_automation_command(
+                message
+            )
+
+            if response is not None:
+                return response
+
+        # ----------------------------------------------
+        # MULTI-ACTION LOCAL COMMANDS
+        # ----------------------------------------------
+
+        if intent == "multi_action":
+            response = self.run_multi_action(
+                message
+            )
+
+            if response is not None:
+                return response
+
+        # ----------------------------------------------
+        # ACTIVE WINDOW COMMANDS
+        # ----------------------------------------------
+
+        if intent == "active_window":
+            response = self.handle_active_window_command(
+                message
+            )
+
+            if response is not None:
+                return response
+
+        # ----------------------------------------------
+        # MEMORY
+        # ----------------------------------------------
+
+        if intent == "memory":
+            response = self.handle_memory_command(
+                message
+            )
+
+            if response is not None:
+                return response
+
+        # ----------------------------------------------
+        # SCREEN VISION
+        # ----------------------------------------------
+
+        if intent == "screen":
+            return self.analyze_screen(
+                message
+            )
+
+        # ----------------------------------------------
+        # LOCAL PC COMMAND
+        # ----------------------------------------------
+
+        if intent == "local_command":
+            response = self.commands.execute(
+                normalized
+            )
+
+            if response is not None:
+                self.remember_local_action(
+                    normalized
+                )
+                return response
+
+        # ----------------------------------------------
+        # SAFETY FALLBACK
+        # ----------------------------------------------
+        # If an intent looked local but the local handler did not
+        # understand it, try the normal command engine once before AI.
+        # This preserves older commands added in earlier Jeroo versions.
+
+        if intent != "ai":
+            command_response = self.commands.execute(
+                normalized
+            )
+
+            if command_response is not None:
+                self.remember_local_action(
+                    normalized
+                )
+                return command_response
+
+        # ----------------------------------------------
+        # AUTOMATIC LONG-TERM MEMORY DETECTION
+        # ----------------------------------------------
+
+        detected_memory = self.detect_memory(
+            message
         )
 
         if detected_memory:
-
             self.memory.add(
                 detected_memory
             )
 
         # ----------------------------------------------
-        # NORMALIZE COMMAND
+        # AI CHAT + RELEVANT LONG-TERM MEMORY
         # ----------------------------------------------
 
-        normalized = (
-            self.normalize_command(
-                message
-            )
+        relevant_memories = self.memory.context_for(
+            message,
+            limit=8
         )
 
-        # ----------------------------------------------
-        # LOCAL COMMANDS
-        # ----------------------------------------------
-
-        command_response = (
-            self.commands.execute(
-                normalized
-            )
+        response = self.brain.get_response(
+            message,
+            memories=relevant_memories
         )
 
-        # IMPORTANT:
-        # Check for None instead of truthiness.
-        #
-        # This means even an empty/false-like
-        # command response won't accidentally
-        # fall through to Gemini.
-
-        if command_response is not None:
-
-            return command_response
-
-        # ----------------------------------------------
-        # FIND RELEVANT MEMORIES
-        # ----------------------------------------------
-
-        relevant_memories = (
-            self.memory.search(
-                message
-            )
+        self.remember_ai_exchange(
+            message,
+            response
         )
 
-        # ----------------------------------------------
-        # SEND MEMORY CONTEXT TO BRAIN
-        # ----------------------------------------------
+        return response
 
-        if relevant_memories:
-
-            memory_context = (
-                "\n\nRelevant information I remember "
-                "about the user:\n"
-            )
-
-            for memory in relevant_memories:
-
-                memory_context += (
-                    f"- {memory}\n"
-                )
-
-            message_for_brain = (
-                message
-                + memory_context
-            )
-
-        else:
-
-            message_for_brain = message
-
-        # ----------------------------------------------
-        # SEND TO AI
-        # ----------------------------------------------
-
-        return self.brain.get_response(
-            message_for_brain
-        )

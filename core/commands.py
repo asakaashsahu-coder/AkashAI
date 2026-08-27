@@ -1,5 +1,4 @@
-
-import subprocess
+import re
 
 from services.app_launcher import AppLauncher
 from services.project_manager import ProjectManager
@@ -35,21 +34,47 @@ class Commands:
 
         cleaned = message
 
-        for word in [
-            "jeroo",
-            "jaroo",
-            "please",
-            "can you",
-            "could you",
-            "would you",
-            "hey",
-            "for me",
-        ]:
+        # Remove wake-name / polite prefixes safely.
+        # Example:
+        # "Hey Jeroo, please open Chrome"
+        # becomes:
+        # "open chrome"
+        prefix_patterns = [
+            r"^(?:hey\s+)?(?:jeroo|jerro|jaroo)\b[\s,.:;!?-]*",
+            r"^(?:please)\b[\s,.:;!?-]*",
+            r"^(?:can you|could you|would you)\b[\s,.:;!?-]*",
+        ]
 
-            cleaned = cleaned.replace(
-                word,
-                ""
-            )
+        changed = True
+
+        while changed:
+            changed = False
+
+            for pattern in prefix_patterns:
+
+                new_cleaned = re.sub(
+                    pattern,
+                    "",
+                    cleaned,
+                    count=1,
+                    flags=re.IGNORECASE
+                )
+
+                if new_cleaned != cleaned:
+                    cleaned = new_cleaned.strip()
+                    changed = True
+
+        cleaned = re.sub(
+            r"^[\s,.:;!?-]+",
+            "",
+            cleaned
+        )
+
+        cleaned = re.sub(
+            r"\s+for me[\s,.:;!?-]*$",
+            "",
+            cleaned
+        )
 
         cleaned = " ".join(
             cleaned.split()
@@ -359,6 +384,100 @@ class Commands:
             )
 
         # ==================================================
+        # BATTERY STATUS
+        # ==================================================
+
+        battery_phrases = [
+            "battery",
+            "battery status",
+            "battery percentage",
+            "battery level",
+            "check battery",
+            "check battery status",
+            "how much battery do i have",
+            "how much battery is left",
+            "what is my battery",
+            "what's my battery",
+        ]
+
+        if (
+            cleaned in battery_phrases
+            or (
+                "battery" in cleaned
+                and any(
+                    word in cleaned
+                    for word in [
+                        "status",
+                        "percentage",
+                        "level",
+                        "left",
+                        "remaining",
+                        "check",
+                    ]
+                )
+            )
+        ):
+
+            return self.system.battery_status()
+
+        # ==================================================
+        # SCREENSHOT
+        # ==================================================
+
+        screenshot_phrases = [
+            "screenshot",
+            "take screenshot",
+            "take a screenshot",
+            "take screen shot",
+            "capture screen",
+            "capture my screen",
+            "take a picture of my screen",
+        ]
+
+        if (
+            cleaned in screenshot_phrases
+            or "take screenshot" in cleaned
+            or "take a screenshot" in cleaned
+            or "capture screen" in cleaned
+        ):
+
+            return self.system.take_screenshot()
+
+        # ==================================================
+        # CURRENT TIME
+        # ==================================================
+
+        time_phrases = [
+            "time",
+            "what time is it",
+            "what's the time",
+            "tell me the time",
+            "current time",
+        ]
+
+        if cleaned in time_phrases:
+
+            return self.system.current_time()
+
+        # ==================================================
+        # CURRENT DATE
+        # ==================================================
+
+        date_phrases = [
+            "date",
+            "what is the date",
+            "what's the date",
+            "what day is it",
+            "today's date",
+            "todays date",
+            "current date",
+        ]
+
+        if cleaned in date_phrases:
+
+            return self.system.current_date()
+
+        # ==================================================
         # VOLUME UP
         # ==================================================
 
@@ -561,84 +680,78 @@ class Commands:
                 )
 
         # ==================================================
-        # SMART OPEN APPLICATION
+        # SMART APP CONTROL
         # ==================================================
 
-        if cleaned.startswith("open "):
+        # Natural open phrases such as:
+        # open chrome / launch spotify / start my browser
+        open_prefixes = [
+            "open ",
+            "launch ",
+            "start ",
+            "run ",
+        ]
 
-            app_name = cleaned[
-                5:
-            ].strip()
+        for prefix in open_prefixes:
+            if cleaned.startswith(prefix):
+                app_name = cleaned[len(prefix):].strip()
 
-            if app_name:
+                # Website and folder commands are handled above,
+                # so anything reaching here can be treated as an app.
+                if app_name:
+                    return self.launcher.open_app(app_name)
 
-                # The AppLauncher now searches
-                # automatically discovered Windows
-                # Start Menu applications.
-                return self.launcher.open_app(
-                    app_name
-                )
+        # Natural close phrases such as:
+        # close spotify / quit chrome / exit vs code
+        close_prefixes = [
+            "close ",
+            "quit ",
+            "exit ",
+            "stop ",
+        ]
 
-        # ==================================================
-        # CLOSE APPLICATION
-        # ==================================================
+        for prefix in close_prefixes:
+            if cleaned.startswith(prefix):
+                app_name = cleaned[len(prefix):].strip()
 
-        if cleaned.startswith("close "):
+                if app_name:
+                    return self.launcher.close_app(app_name)
 
-            app_name = cleaned[
-                6:
-            ].strip()
+        # Switch/focus an application that is already open.
+        switch_prefixes = [
+            "switch to ",
+            "go to ",
+            "focus ",
+            "show ",
+            "bring up ",
+        ]
 
-            process_names = {
+        for prefix in switch_prefixes:
+            if cleaned.startswith(prefix):
+                app_name = cleaned[len(prefix):].strip()
 
-                "notepad":
-                    "notepad.exe",
+                if app_name:
+                    return self.launcher.switch_to_app(app_name)
 
-                "chrome":
-                    "chrome.exe",
+        # Useful app discovery command.
+        if cleaned in [
+            "list apps",
+            "list applications",
+            "show installed apps",
+            "what apps do i have",
+        ]:
+            apps = self.launcher.get_installed_apps()
 
-                "google chrome":
-                    "chrome.exe",
+            if not apps:
+                return "I couldn't find any installed applications."
 
-                "edge":
-                    "msedge.exe",
+            preview = apps[:25]
+            result = ", ".join(preview)
 
-                "microsoft edge":
-                    "msedge.exe",
+            if len(apps) > 25:
+                result += f" and {len(apps) - 25} more"
 
-                "calculator":
-                    "CalculatorApp.exe",
-
-                "paint":
-                    "mspaint.exe",
-            }
-
-            if app_name in process_names:
-
-                try:
-
-                    subprocess.run(
-                        [
-                            "taskkill",
-                            "/IM",
-                            process_names[
-                                app_name
-                            ],
-                            "/F",
-                        ],
-                        capture_output=True,
-                    )
-
-                    return (
-                        f"Closed {app_name}."
-                    )
-
-                except Exception as e:
-
-                    return (
-                        f"I couldn't close "
-                        f"{app_name}: {e}"
-                    )
+            return f"I found these apps: {result}."
 
         # ==================================================
         # NOT A LOCAL COMMAND

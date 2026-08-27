@@ -1,3 +1,4 @@
+
 import keyboard
 import subprocess
 import sys
@@ -50,7 +51,9 @@ def main():
         try:
 
             app.deiconify()
+
             app.lift()
+
             app.attributes(
                 "-topmost",
                 True
@@ -103,3 +106,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+

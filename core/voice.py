@@ -1,6 +1,6 @@
 import asyncio
-import tempfile
 import os
+import tempfile
 import threading
 
 import edge_tts
@@ -9,146 +9,146 @@ import pygame
 
 class Voice:
 
-    def __init__(self):
-
+    def __init__(self, status_callback=None):
         self.voice = "en-US-AriaNeural"
-
         self.is_speaking = False
         self.current_file = None
+        self.status_callback = status_callback
+
+        self.lock = threading.Lock()
 
         pygame.mixer.init()
+
+    # ==================================================
+    # STATUS
+    # ==================================================
+
+    def _set_status(self, status):
+        if self.status_callback:
+            try:
+                self.status_callback(status)
+            except Exception:
+                pass
 
     # ==================================================
     # SPEAK
     # ==================================================
 
-    def speak(self, text):
+    def speak(self, text, on_finish=None):
+        if not text:
+            return
 
-        # Stop previous speech
-        self.stop()
+        self.stop(update_status=False)
 
-        self.is_speaking = True
+        with self.lock:
+            self.is_speaking = True
+
+        self._set_status("Speaking")
 
         thread = threading.Thread(
             target=self._speak_thread,
-            args=(text,),
+            args=(text, on_finish),
             daemon=True
         )
-
         thread.start()
 
-    # ==================================================
-    # SPEAK THREAD
-    # ==================================================
-
-    def _speak_thread(self, text):
-
+    def _speak_thread(self, text, on_finish=None):
         temp_file = None
 
         try:
-
             temp = tempfile.NamedTemporaryFile(
                 delete=False,
                 suffix=".mp3"
             )
-
             temp_file = temp.name
             temp.close()
 
             self.current_file = temp_file
 
             asyncio.run(
-                self._generate_audio(
-                    text,
-                    temp_file
-                )
+                self._generate_audio(text, temp_file)
             )
 
-            # User stopped speech
-            if not self.is_speaking:
+            with self.lock:
+                should_speak = self.is_speaking
+
+            if not should_speak:
                 return
 
-            pygame.mixer.music.load(
-                temp_file
-            )
-
+            pygame.mixer.music.load(temp_file)
             pygame.mixer.music.play()
 
-            # Monitor playback
+            clock = pygame.time.Clock()
+
             while pygame.mixer.music.get_busy():
+                with self.lock:
+                    still_speaking = self.is_speaking
 
-                if not self.is_speaking:
-
+                if not still_speaking:
                     pygame.mixer.music.stop()
-
                     break
 
-                pygame.time.Clock().tick(20)
+                clock.tick(20)
 
         except Exception as e:
-
-            print(
-                f"Voice error: {e}"
-            )
+            print(f"Voice error: {e}")
 
         finally:
-
-            self.is_speaking = False
+            with self.lock:
+                self.is_speaking = False
 
             try:
-
                 pygame.mixer.music.stop()
-
+                pygame.mixer.music.unload()
             except Exception:
                 pass
 
             if temp_file:
-
                 try:
-
-                    if os.path.exists(
-                        temp_file
-                    ):
-
-                        os.remove(
-                            temp_file
-                        )
-
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
                 except Exception:
                     pass
 
             self.current_file = None
+            self._set_status("Ready")
 
-    # ==================================================
-    # GENERATE AUDIO
-    # ==================================================
+            if on_finish:
+                try:
+                    on_finish()
+                except Exception as e:
+                    print("Voice finish callback error:", e)
 
-    async def _generate_audio(
-        self,
-        text,
-        filename
-    ):
-
+    async def _generate_audio(self, text, filename):
         communicate = edge_tts.Communicate(
             text=text,
-            voice=self.voice
+            voice=self.voice,
+            rate="+8%"
         )
-
-        await communicate.save(
-            filename
-        )
+        await communicate.save(filename)
 
     # ==================================================
-    # STOP SPEAKING
+    # STOP / INTERRUPTION
     # ==================================================
 
-    def stop(self):
-
-        self.is_speaking = False
+    def stop(self, update_status=True):
+        with self.lock:
+            self.is_speaking = False
 
         try:
-
             pygame.mixer.music.stop()
+
+            try:
+                pygame.mixer.music.unload()
+            except Exception:
+                pass
 
         except Exception:
             pass
+
+        if update_status:
+            self._set_status("Ready")
+
+    def speaking(self):
+        with self.lock:
+            return self.is_speaking
