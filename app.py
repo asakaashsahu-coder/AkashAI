@@ -6,6 +6,7 @@ import os
 import threading
 
 from gui.main_window import MainWindow
+from services.startup_manager import StartupManager
 
 
 APP_DIR = os.path.dirname(
@@ -25,6 +26,34 @@ def main():
     app = MainWindow()
 
     print("Window created...\n")
+
+    startup_manager = StartupManager()
+
+    startup_ok, startup_message = startup_manager.enable()
+
+    if startup_ok:
+        print(
+            "Windows startup enabled for Jerro."
+        )
+    else:
+        print(
+            startup_message
+        )
+
+    start_as_orb = (
+        "--orb" in sys.argv
+    )
+
+    if start_as_orb:
+        try:
+            app.withdraw()
+        except Exception:
+            pass
+
+        app.after(
+            180,
+            app.start_in_floating_mode
+        )
 
     # ==========================================
     # BRING JEROO TO FRONT
@@ -50,24 +79,7 @@ def main():
 
         try:
 
-            app.deiconify()
-
-            app.lift()
-
-            app.attributes(
-                "-topmost",
-                True
-            )
-
-            app.after(
-                300,
-                lambda: app.attributes(
-                    "-topmost",
-                    False
-                )
-            )
-
-            app.focus_force()
+            app.restore_full_window()
 
         except Exception as e:
 
@@ -80,15 +92,26 @@ def main():
     # GLOBAL SHORTCUT
     # ==========================================
 
-    keyboard.add_hotkey(
-        "ctrl+shift+j",
-        show_jeroo
-    )
+    hotkey_registered = False
 
-    print(
-        "Global shortcut enabled: "
-        "Ctrl + Shift + J\n"
-    )
+    try:
+        keyboard.add_hotkey(
+            "ctrl+shift+j",
+            show_jeroo
+        )
+
+        hotkey_registered = True
+
+        print(
+            "Global shortcut enabled: "
+            "Ctrl + Shift + J\n"
+        )
+
+    except Exception as error:
+        print(
+            "Global shortcut unavailable:",
+            error
+        )
 
     # ==========================================
     # START APPLICATION
@@ -100,7 +123,11 @@ def main():
 
     finally:
 
-        keyboard.unhook_all()
+        if hotkey_registered:
+            try:
+                keyboard.unhook_all()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

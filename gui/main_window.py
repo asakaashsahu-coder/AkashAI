@@ -10,6 +10,7 @@ from gui.input_bar import InputBar
 from services.chat_history import ChatHistoryManager
 from services.settings_manager import SettingsManager
 from gui.settings_panel import SettingsPanel
+from gui.floating_assistant import FloatingAssistant
 
 
 class MainWindow(ctk.CTk):
@@ -50,6 +51,7 @@ class MainWindow(ctk.CTk):
         self.auto_listen_job = None
 
         self.closing = False
+        self.shutdown_started = False
 
         # ==================================================
         # HEADER
@@ -131,9 +133,23 @@ class MainWindow(ctk.CTk):
             pady=(6, 12)
         )
 
+        # ==================================================
+        # FLOATING MINI ASSISTANT
+        # ==================================================
+
+        self.floating_assistant = FloatingAssistant(
+            self,
+            restore_callback=self.restore_full_window,
+            exit_callback=self.exit_application,
+            wake_callback=self.toggle_wake_from_floating,
+            voice_chat_callback=self.toggle_voice_chat_from_floating
+        )
+
+        # Closing the full window now enters floating mode
+        # instead of shutting Jerro down.
         self.protocol(
             "WM_DELETE_WINDOW",
-            self.on_close
+            self.hide_to_floating
         )
 
         self.apply_saved_ui_settings()
@@ -174,13 +190,23 @@ class MainWindow(ctk.CTk):
             if self.closing:
                 return
 
+            status_color = colors.get(
+                status,
+                "#4ade80"
+            )
+
             self.header.set_status(
                 status,
-                colors.get(
-                    status,
-                    "#4ade80"
-                )
+                status_color
             )
+
+            try:
+                self.floating_assistant.set_status(
+                    status,
+                    status_color
+                )
+            except Exception:
+                pass
 
             try:
                 self.input_bar.set_busy_state(
@@ -1037,15 +1063,140 @@ class MainWindow(ctk.CTk):
         return self.settings_manager.clear_memory_file()
 
     # ==================================================
+    # WINDOWS STARTUP / DIRECT ORB MODE
+    # ==================================================
+
+    def start_in_floating_mode(self):
+        if self.closing:
+            return
+
+        try:
+            self.withdraw()
+            self.floating_assistant.show()
+
+            print(
+                "Jerro started in floating orb mode."
+            )
+
+        except Exception as error:
+            print(
+                "Startup orb mode error:",
+                error
+            )
+
+    # ==================================================
+    # FLOATING ASSISTANT MODE
+    # ==================================================
+
+    def hide_to_floating(self):
+        if self.closing:
+            return
+
+        try:
+            self.withdraw()
+
+            self.floating_assistant.show()
+
+            print(
+                "Jerro entered floating mode."
+            )
+
+        except Exception as error:
+            print(
+                "Floating mode error:",
+                error
+            )
+
+    def restore_full_window(self):
+        if self.closing:
+            return
+
+        try:
+            self.floating_assistant.hide()
+
+            self.deiconify()
+            self.lift()
+
+            self.attributes(
+                "-topmost",
+                True
+            )
+
+            self.after(
+                250,
+                lambda: self.attributes(
+                    "-topmost",
+                    False
+                )
+            )
+
+            self.focus_force()
+
+        except Exception as error:
+            print(
+                "Restore full window error:",
+                error
+            )
+
+    def toggle_wake_from_floating(self):
+        if not self.core_ready():
+            return
+
+        enabled = not self.wake_mode
+
+        try:
+            if enabled:
+                self.input_bar.wake_switch.select()
+            else:
+                self.input_bar.wake_switch.deselect()
+        except Exception:
+            pass
+
+        self.toggle_wake_mode(
+            enabled
+        )
+
+    def toggle_voice_chat_from_floating(self):
+        if not self.core_ready():
+            return
+
+        enabled = not self.voice_chat_mode
+
+        try:
+            if enabled:
+                self.input_bar.voice_chat_switch.select()
+            else:
+                self.input_bar.voice_chat_switch.deselect()
+        except Exception:
+            pass
+
+        self.toggle_voice_chat(
+            enabled
+        )
+
+    def exit_application(self):
+        self.on_close()
+
+    # ==================================================
     # CLOSE
     # ==================================================
 
     def on_close(self):
+        if self.shutdown_started:
+            return
+
+        self.shutdown_started = True
         self.closing = True
         self.wake_mode = False
         self.voice_chat_mode = False
         self.voice_turn_active = False
-        self._cancel_auto_listen()
+
+        print("Shutting down Jerro...")
+
+        try:
+            self._cancel_auto_listen()
+        except Exception:
+            pass
 
         try:
             if self.listener:
@@ -1061,4 +1212,27 @@ class MainWindow(ctk.CTk):
         except Exception:
             pass
 
-        self.destroy()
+        try:
+            if self.floating_assistant:
+                self.floating_assistant.prepare_shutdown()
+        except Exception:
+            pass
+
+        try:
+            self.withdraw()
+        except Exception:
+            pass
+
+        try:
+            self.after(
+                20,
+                self.quit
+            )
+        except Exception:
+            try:
+                self.quit()
+            except Exception:
+                pass
+
+        print("Jerro shutdown complete.")
+
