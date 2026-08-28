@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timedelta
 
 from core.commands import Commands
 from core.brain import Brain
@@ -788,6 +789,10 @@ class Router:
             "analyze it again",
             "analyse it again",
             "take another look",
+            "what changed",
+            "what changed here",
+            "what changed on screen",
+            "what changed on my screen",
         }
 
     def is_screen_context_followup(self, message):
@@ -815,6 +820,10 @@ class Router:
             "what should i click",
             "which button should i click",
             "which one should i click",
+            "which line",
+            "which line is wrong",
+            "which line should i change",
+            "show me the line",
             "explain the code on the screen",
             "explain that code",
             "what does that code do",
@@ -834,18 +843,37 @@ class Router:
             "the error",
             "that button",
             "that code",
+            "which line",
             "on the screen",
             "from the screen",
             "what you saw",
             "what you just saw",
             "that window",
             "this screen",
+            "that page",
         ]
 
         return any(
             phrase in normalized
             for phrase in phrases
         )
+
+    def _screen_window_changed(self):
+        context = self.screen_context.get()
+
+        if not context:
+            return False, None
+
+        current_window = self.screen.get_active_window_info()
+
+        if not current_window:
+            return False, None
+
+        changed = not self.screen_context.matches_window(
+            current_window
+        )
+
+        return changed, current_window
 
     def handle_screen_context_followup(self, message):
         normalized = self.normalize_command(
@@ -867,9 +895,8 @@ class Router:
         if self.is_screen_refresh_request(
             message
         ):
-            return self.analyze_screen(
-                "Analyze the current screen again and tell me what changed "
-                "or what is important now."
+            return self.analyze_screen_change(
+                message
             )
 
         if not self.is_screen_context_followup(
@@ -882,22 +909,50 @@ class Router:
         if not context:
             return None
 
+        changed, current_window = self._screen_window_changed()
+
+        if changed:
+            title = (
+                current_window.get("title")
+                if current_window
+                else ""
+            )
+
+            return self.analyze_screen(
+                (
+                    f"{message}\n\n"
+                    "The foreground window changed since the previous "
+                    "screen analysis. Analyze what is visible now instead "
+                    "of relying on the old screen context."
+                    + (
+                        f" The current window is '{title}'."
+                        if title
+                        else ""
+                    )
+                )
+            )
+
         prompt = (
             "The user is asking a follow-up about a screen you analyzed "
-            "recently. Do not claim you can still see the live screen. "
-            "Use only the remembered analysis below. If the answer depends "
-            "on something that may have changed, tell the user to ask you "
-            "to 'look again'.\n\n"
+            "recently. The foreground window is still the same. Use the "
+            "remembered analysis below and answer naturally. Do not claim "
+            "you are looking at a new screenshot. If precise visual details "
+            "may have changed inside the same window, recommend 'look again'.\n\n"
             "Previous screen-analysis request:\n"
             f"{context.get('original_request') or '(not recorded)'}\n\n"
+            "Analysis mode:\n"
+            f"{context.get('analysis_mode') or 'general'}\n\n"
             "Remembered screen analysis:\n"
             f"{context.get('analysis')}\n\n"
-            "Foreground window at that time:\n"
+            "Foreground window:\n"
             f"{context.get('window_title') or 'Unknown'} "
-            f"({context.get('process_name') or 'unknown process'})\n\n"
+            f"({context.get('app_name') or context.get('process_name') or 'unknown app'})\n\n"
             "User follow-up:\n"
             f"{message}\n\n"
-            "Answer the follow-up directly and concisely."
+            "Answer the follow-up directly. For coding errors, mention the "
+            "likely line or visible code area when the remembered analysis "
+            "supports it. For click guidance, describe the visible control "
+            "clearly instead of inventing coordinates."
         )
 
         relevant_memories = self.memory.context_for(
@@ -934,6 +989,9 @@ class Router:
             "take the next step",
             "perform the next step",
             "fix it for me",
+            "do the safe action",
+            "do the suggested action",
+            "perform that action",
         }
 
         if normalized in exact:
@@ -962,45 +1020,16 @@ class Router:
                 "Ask me to look at the screen first."
             )
 
-        prompt = self.screen_actions.build_planning_prompt(
+        safe_command = self.screen_actions.plan(
+            self.brain,
             context,
             message
         )
 
-        response = self.brain.get_response(
-            prompt,
-            memories=None
-        )
-
-        command = None
-
-        for line in str(response).splitlines():
-            if line.strip().upper().startswith(
-                "COMMAND:"
-            ):
-                command = line.split(
-                    ":",
-                    1
-                )[1].strip()
-                break
-
-        if (
-            not command
-            or command.upper() == "NONE"
-        ):
+        if not safe_command:
             return (
                 "I can explain the next step, but I don't have a safe "
                 "supported PC action for that yet."
-            )
-
-        safe_command = self.screen_actions.sanitize(
-            command
-        )
-
-        if not safe_command:
-            return (
-                "I found a possible action, but I won't run it because "
-                "it falls outside the safe screen-action controls."
             )
 
         self.pending_screen_action = safe_command
@@ -1031,8 +1060,12 @@ class Router:
 
         if normalized in {
             "confirm screen action",
-            "yes do it",
             "confirm that action",
+            "confirm action",
+            "yes do it",
+            "yes",
+            "do it",
+            "go ahead",
         }:
             if not self.pending_screen_action:
                 return (
@@ -1063,8 +1096,169 @@ class Router:
     # SCREEN-AWARE REQUEST DETECTION
     # --------------------------------------------------
 
+    def screen_analysis_mode(self, message, active_window=None):
+        normalized = self.normalize_command(
+            message
+        )
+
+        if any(
+            phrase in normalized
+            for phrase in (
+                "error",
+                "not working",
+                "failed",
+                "exception",
+                "traceback",
+                "bug",
+                "fix this",
+            )
+        ):
+            return "error"
+
+        if any(
+            phrase in normalized
+            for phrase in (
+                "summarize",
+                "summarise",
+                "summary",
+                "read this page",
+                "explain this page",
+            )
+        ):
+            return "summary"
+
+        if any(
+            phrase in normalized
+            for phrase in (
+                "what should i click",
+                "where should i click",
+                "what do i click",
+                "which button",
+            )
+        ):
+            return "click_guidance"
+
+        if any(
+            phrase in normalized
+            for phrase in (
+                "code",
+                "which line",
+                "function",
+                "class",
+            )
+        ):
+            return "code"
+
+        if active_window:
+            app_type = active_window.get(
+                "app_type"
+            )
+
+            if app_type == "code_editor":
+                return "code"
+
+            if app_type == "terminal":
+                return "error"
+
+            if app_type == "browser":
+                return "webpage"
+
+        return "general"
+
+    def build_screen_instruction(
+        self,
+        message,
+        active_window=None,
+        previous_analysis=None
+    ):
+        mode = self.screen_analysis_mode(
+            message,
+            active_window
+        )
+
+        app_name = "Unknown app"
+        title = "Unknown window"
+        app_type = "general"
+
+        if active_window:
+            app_name = (
+                active_window.get("app_name")
+                or active_window.get("process")
+                or app_name
+            )
+            title = (
+                active_window.get("title")
+                or title
+            )
+            app_type = (
+                active_window.get("app_type")
+                or app_type
+            )
+
+        instruction = (
+            f"\n\nJerro v1.5 screen mode: {mode}.\n"
+            f"Active app: {app_name}.\n"
+            f"Window title: {title}.\n"
+            f"App type: {app_type}.\n\n"
+            "Analyze only what is actually visible in the screenshot. "
+            "Be practical and specific. Do not invent text, buttons, code "
+            "lines, errors, or UI elements that cannot be seen. "
+        )
+
+        if mode == "error":
+            instruction += (
+                "Focus on the visible error. Explain what failed, the likely "
+                "cause, the visible clue supporting it, and the safest next "
+                "fix to try. If code or a traceback is visible, mention the "
+                "file or line only when readable."
+            )
+
+        elif mode == "code":
+            instruction += (
+                "Treat this as a coding workspace. Identify the language or "
+                "file when visible, explain the relevant code, point out "
+                "visible mistakes, and give a concrete next change. Avoid "
+                "rewriting unrelated code."
+            )
+
+        elif mode in {
+            "summary",
+            "webpage"
+        }:
+            instruction += (
+                "Give a compact summary of the visible page first, then "
+                "mention the most important details or actions. Distinguish "
+                "visible page content from browser navigation."
+            )
+
+        elif mode == "click_guidance":
+            instruction += (
+                "Identify the visible control the user should use and "
+                "describe it by label, icon, and nearby UI context. Do not "
+                "claim pixel-perfect coordinates. If the action is unclear "
+                "or risky, say so instead of guessing."
+            )
+
+        else:
+            instruction += (
+                "Start with what the user is looking at, then explain the "
+                "most useful visible details and the likely next step."
+            )
+
+        if previous_analysis:
+            instruction += (
+                "\n\nPrevious screen analysis:\n"
+                f"{previous_analysis}\n\n"
+                "Compare the new screenshot with that previous analysis. "
+                "Mention only meaningful changes supported by the new screen."
+            )
+
+        return instruction, mode
+
     def is_screen_request(self, message):
-        normalized = self.normalize_command(message)
+        normalized = self.normalize_command(
+            message
+        )
 
         exact_phrases = [
             "what is on my screen",
@@ -1079,6 +1273,12 @@ class Router:
             "help me with my screen",
             "what should i click here",
             "what do i click here",
+            "summarize this page",
+            "summarise this page",
+            "summarize this screen",
+            "summarise this screen",
+            "explain this page",
+            "read this page",
         ]
 
         if normalized in exact_phrases:
@@ -1088,6 +1288,7 @@ class Router:
             "screen",
             "on screen",
             "on my display",
+            "this page",
         ]
 
         action_words = [
@@ -1103,12 +1304,19 @@ class Router:
             "click",
             "help",
             "what",
+            "summarize",
+            "summarise",
         ]
 
-        if any(word in normalized for word in screen_words):
-            return any(word in normalized for word in action_words)
+        if any(
+            word in normalized
+            for word in screen_words
+        ):
+            return any(
+                word in normalized
+                for word in action_words
+            )
 
-        # These common phrases usually refer to something visible right now.
         contextual_phrases = [
             "explain this error",
             "what does this error mean",
@@ -1144,20 +1352,16 @@ class Router:
         )
 
         active_window = self.screen.get_active_window_info()
-        screen_message = message
 
-        title = ""
-        process = ""
+        instruction, mode = self.build_screen_instruction(
+            message,
+            active_window
+        )
 
-        if active_window:
-            title = active_window.get("title") or "Unknown title"
-            process = active_window.get("process") or "Unknown process"
-
-            screen_message += (
-                "\n\nDesktop context: the current foreground window is "
-                f"'{title}' and its process is '{process}'. "
-                "Use this only as supporting context for what is visible."
-            )
+        screen_message = (
+            f"{message}"
+            f"{instruction}"
+        )
 
         response = self.brain.get_screen_response(
             screen_message,
@@ -1165,14 +1369,90 @@ class Router:
             memories=relevant_memories
         )
 
-        # Keep only the text interpretation for five minutes.
-        # The screenshot bytes are not stored by ScreenContext.
         if response:
+            active_window = active_window or {}
+
             self.screen_context.remember(
                 analysis=response,
                 original_request=message,
-                window_title=title,
-                process_name=process
+                window_title=active_window.get(
+                    "title"
+                ),
+                process_name=active_window.get(
+                    "process"
+                ),
+                app_name=active_window.get(
+                    "app_name"
+                ),
+                app_type=active_window.get(
+                    "app_type"
+                ),
+                analysis_mode=mode
+            )
+
+            self.conversation_context.remember_exchange(
+                message,
+                response
+            )
+
+        return response
+
+    def analyze_screen_change(self, message):
+        previous = self.screen_context.get()
+        previous_analysis = (
+            previous.get("analysis")
+            if previous
+            else None
+        )
+
+        image_bytes, error = self.screen.capture_screen_bytes()
+
+        if error:
+            return error
+
+        active_window = self.screen.get_active_window_info()
+
+        instruction, mode = self.build_screen_instruction(
+            message,
+            active_window,
+            previous_analysis=previous_analysis
+        )
+
+        screen_message = (
+            "The user asked you to look again at the current screen and "
+            "identify what changed or what matters now.\n\n"
+            f"User request: {message}"
+            f"{instruction}"
+        )
+
+        response = self.brain.get_screen_response(
+            screen_message,
+            image_bytes,
+            memories=self.memory.context_for(
+                message,
+                limit=5
+            )
+        )
+
+        if response:
+            active_window = active_window or {}
+
+            self.screen_context.remember(
+                analysis=response,
+                original_request=message,
+                window_title=active_window.get(
+                    "title"
+                ),
+                process_name=active_window.get(
+                    "process"
+                ),
+                app_name=active_window.get(
+                    "app_name"
+                ),
+                app_type=active_window.get(
+                    "app_type"
+                ),
+                analysis_mode=mode
             )
 
             self.conversation_context.remember_exchange(
@@ -1385,6 +1665,70 @@ class Router:
     # NOTES / REMINDERS / MULTI-ACTION AUTOMATION
     # --------------------------------------------------
 
+    def _build_reminder_datetime(
+        self,
+        hour_text,
+        minute_text=None,
+        meridiem=None,
+        tomorrow=False
+    ):
+        try:
+            hour = int(
+                hour_text
+            )
+            minute = int(
+                minute_text or 0
+            )
+        except (TypeError, ValueError):
+            return None
+
+        if minute < 0 or minute > 59:
+            return None
+
+        meridiem = (
+            meridiem
+            or ""
+        ).lower().strip()
+
+        if meridiem:
+            if hour < 1 or hour > 12:
+                return None
+
+            if meridiem == "am":
+                hour = (
+                    0
+                    if hour == 12
+                    else hour
+                )
+            else:
+                hour = (
+                    12
+                    if hour == 12
+                    else hour + 12
+                )
+        elif hour < 0 or hour > 23:
+            return None
+
+        now = datetime.now()
+
+        due = now.replace(
+            hour=hour,
+            minute=minute,
+            second=0,
+            microsecond=0
+        )
+
+        if tomorrow:
+            due += timedelta(
+                days=1
+            )
+        elif due <= now:
+            due += timedelta(
+                days=1
+            )
+
+        return due
+
     def handle_automation_command(self, message):
         normalized = self.normalize_command(message)
 
@@ -1430,6 +1774,64 @@ class Router:
                 task,
                 minutes
             )
+
+        exact_reminder = re.match(
+            r"^remind me at\s+"
+            r"(\d{1,2})"
+            r"(?::(\d{2}))?"
+            r"\s*(am|pm)?\s+to\s+(.+)$",
+            normalized
+        )
+
+        if exact_reminder:
+            due = self._build_reminder_datetime(
+                exact_reminder.group(1),
+                exact_reminder.group(2),
+                exact_reminder.group(3)
+            )
+
+            if due is None:
+                return "I couldn't understand that reminder time."
+
+            return self.automation.add_reminder_at(
+                exact_reminder.group(4).strip(),
+                due
+            )
+
+        tomorrow_reminder = re.match(
+            r"^remind me tomorrow at\s+"
+            r"(\d{1,2})"
+            r"(?::(\d{2}))?"
+            r"\s*(am|pm)?\s+to\s+(.+)$",
+            normalized
+        )
+
+        if tomorrow_reminder:
+            due = self._build_reminder_datetime(
+                tomorrow_reminder.group(1),
+                tomorrow_reminder.group(2),
+                tomorrow_reminder.group(3),
+                tomorrow=True
+            )
+
+            if due is None:
+                return "I couldn't understand that reminder time."
+
+            return self.automation.add_reminder_at(
+                tomorrow_reminder.group(4).strip(),
+                due
+            )
+
+        if normalized in [
+            "what do i have today",
+            "what's on my schedule today",
+            "whats on my schedule today",
+            "today's reminders",
+            "todays reminders",
+            "give me my daily brief",
+            "give me my daily briefing",
+        ]:
+            return self.automation.today_summary()
 
         if normalized in [
             "show reminders", "show my reminders",

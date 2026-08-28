@@ -22,6 +22,10 @@ class AutomationManager:
         self.lock = threading.Lock()
         self.running = True
 
+        # MainWindow can register a callback so reminders are handled
+        # by Jerro's orb and voice instead of only a Windows popup.
+        self.reminder_callback = None
+
         self._ensure_file(self.notes_file, [])
         self._ensure_file(self.reminders_file, [])
 
@@ -45,6 +49,13 @@ class AutomationManager:
     def _save(self, path, data):
         with open(path, "w", encoding="utf-8") as file:
             json.dump(data, file, indent=2, ensure_ascii=False)
+
+    # ==================================================
+    # REMINDER CALLBACK
+    # ==================================================
+
+    def set_reminder_callback(self, callback):
+        self.reminder_callback = callback
 
     # ==================================================
     # NOTES
@@ -113,6 +124,143 @@ class AutomationManager:
 
         when = due.strftime("%I:%M %p").lstrip("0")
         return f"⏰ Reminder set for {when}: {task}"
+
+    def add_reminder_at(self, task, due):
+        task = task.strip()
+
+        if not task:
+            return "What should I remind you about?"
+
+        if not isinstance(due, datetime):
+            return "I couldn't understand that reminder time."
+
+        if due <= datetime.now():
+            return "That reminder time has already passed."
+
+        with self.lock:
+            reminders = self._load(
+                self.reminders_file,
+                []
+            )
+
+            reminders.append({
+                "task": task,
+                "due_at": due.isoformat(
+                    timespec="seconds"
+                ),
+                "done": False
+            })
+
+            reminders.sort(
+                key=lambda item: item.get(
+                    "due_at",
+                    ""
+                )
+            )
+
+            self._save(
+                self.reminders_file,
+                reminders
+            )
+
+        when = due.strftime(
+            "%d %b at %I:%M %p"
+        ).lstrip("0")
+
+        return f"⏰ Reminder set for {when}: {task}"
+
+    def today_summary(self):
+        now = datetime.now()
+        today = now.date()
+
+        with self.lock:
+            reminders = self._load(
+                self.reminders_file,
+                []
+            )
+
+            notes = self._load(
+                self.notes_file,
+                []
+            )
+
+        today_items = []
+
+        for item in reminders:
+            if item.get(
+                "done",
+                False
+            ):
+                continue
+
+            try:
+                due = datetime.fromisoformat(
+                    item["due_at"]
+                )
+            except Exception:
+                continue
+
+            if due.date() == today:
+                today_items.append(
+                    (
+                        due,
+                        item.get(
+                            "task",
+                            "Reminder"
+                        )
+                    )
+                )
+
+        today_items.sort(
+            key=lambda item: item[0]
+        )
+
+        lines = []
+
+        if today_items:
+            lines.append(
+                "⏰ Today's reminders:"
+            )
+
+            for due, task in today_items:
+                when = due.strftime(
+                    "%I:%M %p"
+                ).lstrip("0")
+
+                lines.append(
+                    f"• {when} — {task}"
+                )
+        else:
+            lines.append(
+                "⏰ You don't have any reminders left for today."
+            )
+
+        recent_notes = [
+            item.get(
+                "text",
+                ""
+            ).strip()
+            for item in notes[-3:]
+            if item.get(
+                "text",
+                ""
+            ).strip()
+        ]
+
+        if recent_notes:
+            lines.append("")
+            lines.append(
+                "📝 Recent notes:"
+            )
+
+            for text in recent_notes:
+                lines.append(
+                    f"• {text}"
+                )
+
+        return "\n".join(
+            lines
+        )
 
     def list_reminders(self):
         with self.lock:
@@ -319,7 +467,7 @@ class AutomationManager:
             except Exception as error:
                 print("Reminder worker error:", error)
 
-            time.sleep(5)
+            time.sleep(2)
 
     def _check_due_reminders(self):
         now = datetime.now()
@@ -350,6 +498,19 @@ class AutomationManager:
             self._show_reminder(task)
 
     def _show_reminder(self, task):
+        if self.reminder_callback:
+            try:
+                self.reminder_callback(
+                    task
+                )
+                return
+            except Exception as error:
+                print(
+                    "Reminder callback error:",
+                    error
+                )
+
+        # Fallback when Jerro's GUI callback is unavailable.
         try:
             ctypes.windll.user32.MessageBoxW(
                 0,
@@ -359,4 +520,7 @@ class AutomationManager:
             )
         except Exception as error:
             print(f"⏰ Reminder: {task}")
-            print("Reminder popup error:", error)
+            print(
+                "Reminder popup error:",
+                error
+            )

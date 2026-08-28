@@ -183,6 +183,7 @@ class MainWindow(ctk.CTk):
             "Listening": "#60a5fa",
             "Thinking": "#c084fc",
             "Speaking": "#facc15",
+            "Reminder": "#fb7185",
             "Error": "#fb7185"
         }
 
@@ -242,6 +243,17 @@ class MainWindow(ctk.CTk):
             from core.listener import Listener
 
             self.router = Router()
+
+            try:
+                self.router.automation.set_reminder_callback(
+                    self._on_reminder_due
+                )
+            except Exception as error:
+                print(
+                    "Reminder callback setup error:",
+                    error
+                )
+
             self.voice = Voice(
                 self.set_status
             )
@@ -396,7 +408,8 @@ class MainWindow(ctk.CTk):
             ):
                 self.voice.speak(
                     response,
-                    on_finish=self._after_speaking
+                    on_finish=self._after_speaking,
+                    context=message
                 )
             else:
                 self._after_speaking()
@@ -442,6 +455,87 @@ class MainWindow(ctk.CTk):
             self.set_status(
                 "Ready"
             )
+
+    # ==================================================
+    # REMINDER ALERTS
+    # ==================================================
+
+    def _on_reminder_due(self, task):
+        if self.closing:
+            return
+
+        try:
+            self.after(
+                0,
+                lambda: self._present_reminder(
+                    task
+                )
+            )
+        except Exception:
+            pass
+
+    def _present_reminder(self, task):
+        if self.closing:
+            return
+
+        task = str(
+            task
+            or "Reminder"
+        ).strip()
+
+        message = (
+            f"⏰ Reminder: {task}"
+        )
+
+        self.set_status(
+            "Reminder"
+        )
+
+        try:
+            self.chat_area.add_message(
+                "Jeroo",
+                message
+            )
+
+            self.chat_history.add_message(
+                self.active_chat_id,
+                "Jeroo",
+                message
+            )
+
+            self.refresh_chat_history()
+        except Exception as error:
+            print(
+                "Reminder chat error:",
+                error
+            )
+
+        try:
+            if (
+                self.voice
+                and self.settings_manager.get(
+                    "voice_enabled",
+                    True
+                )
+            ):
+                self.after(
+                    300,
+                    lambda: self.voice.speak(
+                        f"Reminder. {task}",
+                        on_finish=self._after_speaking
+                    )
+                )
+                return
+        except Exception as error:
+            print(
+                "Reminder voice error:",
+                error
+            )
+
+        self.after(
+            1800,
+            self._after_speaking
+        )
 
     # ==================================================
     # MANUAL VOICE INPUT

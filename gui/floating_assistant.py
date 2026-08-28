@@ -13,8 +13,7 @@ class FloatingAssistant(ctk.CTkToplevel):
         restore_callback,
         exit_callback,
         wake_callback,
-        voice_chat_callback,
-        listen_callback=None
+        voice_chat_callback
     ):
         super().__init__(parent)
 
@@ -23,7 +22,6 @@ class FloatingAssistant(ctk.CTkToplevel):
         self.exit_callback = exit_callback
         self.wake_callback = wake_callback
         self.voice_chat_callback = voice_chat_callback
-        self.listen_callback = listen_callback
 
         # ==================================================
         # WINDOW
@@ -85,7 +83,6 @@ class FloatingAssistant(ctk.CTkToplevel):
         self.shutting_down = False
 
         self.energy = 0.0
-        self.activation_flash = 0.0
 
         self.state_colors = {
             "Ready": {
@@ -116,6 +113,12 @@ class FloatingAssistant(ctk.CTkToplevel):
                 "core": "#D81B60",
                 "bright": "#FF8CBC",
                 "outer": "#FF3D8F"
+            },
+
+            "Reminder": {
+                "core": "#E11D48",
+                "bright": "#FFE4E6",
+                "outer": "#FB7185"
             },
 
             "Error": {
@@ -268,11 +271,6 @@ class FloatingAssistant(ctk.CTkToplevel):
             command=self._restore
         )
 
-        self.menu.add_command(
-            label="Talk to Jerro",
-            command=self._listen_now
-        )
-
         self.menu.add_separator()
 
         self.menu.add_command(
@@ -423,7 +421,6 @@ class FloatingAssistant(ctk.CTkToplevel):
         hover_scale = (
             1
             + self.hover_amount * 0.06
-            + self.activation_flash * 0.12
         )
 
         # ==================================================
@@ -705,6 +702,20 @@ class FloatingAssistant(ctk.CTkToplevel):
                 bright
             )
 
+        elif self.status == "Reminder":
+
+            self.canvas.create_text(
+                center,
+                center,
+                text="!",
+                fill="#FFFFFF",
+                font=(
+                    "Segoe UI",
+                    28,
+                    "bold"
+                )
+            )
+
         elif self.status == "Error":
 
             self.canvas.create_text(
@@ -931,12 +942,6 @@ class FloatingAssistant(ctk.CTkToplevel):
             + 1.4
         ) % 360
 
-        if self.activation_flash > 0:
-            self.activation_flash = max(
-                0.0,
-                self.activation_flash - 0.045
-            )
-
         target_hover = (
             1.0
             if self.hovered
@@ -959,12 +964,6 @@ class FloatingAssistant(ctk.CTkToplevel):
             16,
             self._animate
         )
-
-    def flash_activation(self):
-        if self.shutting_down:
-            return
-
-        self.activation_flash = 1.0
 
     # ==================================================
     # STATUS
@@ -1055,20 +1054,7 @@ class FloatingAssistant(ctk.CTkToplevel):
         self,
         event=None
     ):
-        # A normal single click starts voice input.
-        # Dragging the orb only moves it and does not open the microphone.
-        if (
-            not self.dragged
-            and not self.shutting_down
-            and self.listen_callback
-        ):
-            try:
-                self.listen_callback()
-            except Exception as error:
-                print(
-                    "Jerro orb voice error:",
-                    error
-                )
+        pass
 
     # ==================================================
     # MENU / ACTIONS
@@ -1112,21 +1098,6 @@ class FloatingAssistant(ctk.CTkToplevel):
     ):
         if self.restore_callback:
             self.restore_callback()
-
-    def _listen_now(self):
-        if (
-            self.shutting_down
-            or not self.listen_callback
-        ):
-            return
-
-        try:
-            self.listen_callback()
-        except Exception as error:
-            print(
-                "Jerro orb voice error:",
-                error
-            )
 
     def _toggle_wake(self):
         if self.wake_callback:
