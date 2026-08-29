@@ -182,131 +182,6 @@ class FloatingAssistant(ctk.CTkToplevel):
             expand=True
         )
 
-        if reminder_soon_mode:
-            # A quiet "something is coming" halo.
-            soon_pulse = (
-                0.5
-                + 0.5 * math.sin(
-                    self.phase * 0.72
-                )
-            )
-
-            soon_radius = (
-                46
-                + soon_pulse * 4.5
-            ) * hover_scale
-
-            self.canvas.create_oval(
-                center - soon_radius,
-                center - soon_radius,
-                center + soon_radius,
-                center + soon_radius,
-                outline=self._mix(
-                    bright,
-                    "#FFFFFF",
-                    0.22
-                ),
-                width=2
-            )
-
-            indicator_angle = math.radians(
-                self.rotation * 0.42
-            )
-
-            indicator_distance = (
-                49
-                + soon_pulse * 2
-            )
-
-            indicator_x = (
-                center
-                + math.cos(indicator_angle)
-                * indicator_distance
-            )
-
-            indicator_y = (
-                center
-                + math.sin(indicator_angle)
-                * indicator_distance
-            )
-
-            indicator_size = (
-                2.2
-                + soon_pulse * 1.0
-            )
-
-            self.canvas.create_oval(
-                indicator_x - indicator_size,
-                indicator_y - indicator_size,
-                indicator_x + indicator_size,
-                indicator_y + indicator_size,
-                fill="#FFFFFF",
-                outline=""
-            )
-
-        if reminder_mode:
-            # Bright expanding alert halo.
-            alert_radius = (
-                47
-                + reminder_burst * 10
-            ) * hover_scale
-
-            self.canvas.create_oval(
-                center - alert_radius,
-                center - alert_radius,
-                center + alert_radius,
-                center + alert_radius,
-                outline=self._mix(
-                    bright,
-                    "#FFFFFF",
-                    0.36
-                ),
-                width=2
-            )
-
-            # Four small energy flares around the globe.
-            flare_distance = (
-                52
-                + reminder_burst * 5
-            )
-
-            flare_size = (
-                2.0
-                + reminder_burst * 2.0
-            )
-
-            for flare_angle in (
-                0,
-                90,
-                180,
-                270
-            ):
-                radians = math.radians(
-                    flare_angle
-                    + self.rotation * 0.35
-                )
-
-                flare_x = (
-                    center
-                    + math.cos(radians)
-                    * flare_distance
-                )
-
-                flare_y = (
-                    center
-                    + math.sin(radians)
-                    * flare_distance
-                )
-
-                self.canvas.create_oval(
-                    flare_x - flare_size,
-                    flare_y - flare_size,
-                    flare_x + flare_size,
-                    flare_y + flare_size,
-                    fill="#FFFFFF",
-                    outline=""
-                )
-
         # ==================================================
         # PARTICLES
         # ==================================================
@@ -641,6 +516,134 @@ class FloatingAssistant(ctk.CTkToplevel):
                 fill=glow_color,
                 outline=""
             )
+
+        # ==================================================
+        # REMINDER GLOW EFFECTS
+        # ==================================================
+
+        if reminder_soon_mode:
+            # Soft approaching-reminder halo.
+            soon_pulse = (
+                0.5
+                + 0.5 * math.sin(
+                    self.phase * 0.72
+                )
+            )
+
+            soon_radius = (
+                46
+                + soon_pulse * 4.5
+            ) * hover_scale
+
+            self.canvas.create_oval(
+                center - soon_radius,
+                center - soon_radius,
+                center + soon_radius,
+                center + soon_radius,
+                outline=self._mix(
+                    bright,
+                    "#FFFFFF",
+                    0.22
+                ),
+                width=2
+            )
+
+            indicator_angle = math.radians(
+                self.rotation * 0.42
+            )
+
+            indicator_distance = (
+                49
+                + soon_pulse * 2
+            )
+
+            indicator_x = (
+                center
+                + math.cos(indicator_angle)
+                * indicator_distance
+            )
+
+            indicator_y = (
+                center
+                + math.sin(indicator_angle)
+                * indicator_distance
+            )
+
+            indicator_size = (
+                2.2
+                + soon_pulse * 1.0
+            )
+
+            self.canvas.create_oval(
+                indicator_x - indicator_size,
+                indicator_y - indicator_size,
+                indicator_x + indicator_size,
+                indicator_y + indicator_size,
+                fill="#FFFFFF",
+                outline=""
+            )
+
+        if reminder_mode:
+            # Strong exact-time reminder halo.
+            alert_radius = (
+                47
+                + reminder_burst * 10
+            ) * hover_scale
+
+            self.canvas.create_oval(
+                center - alert_radius,
+                center - alert_radius,
+                center + alert_radius,
+                center + alert_radius,
+                outline=self._mix(
+                    bright,
+                    "#FFFFFF",
+                    0.36
+                ),
+                width=2
+            )
+
+            flare_distance = (
+                52
+                + reminder_burst * 5
+            )
+
+            flare_size = (
+                2.0
+                + reminder_burst * 2.0
+            )
+
+            for flare_angle in (
+                0,
+                90,
+                180,
+                270
+            ):
+                radians = math.radians(
+                    flare_angle
+                    + self.rotation * 0.35
+                )
+
+                flare_x = (
+                    center
+                    + math.cos(radians)
+                    * flare_distance
+                )
+
+                flare_y = (
+                    center
+                    + math.sin(radians)
+                    * flare_distance
+                )
+
+                self.canvas.create_oval(
+                    flare_x - flare_size,
+                    flare_y - flare_size,
+                    flare_x + flare_size,
+                    flare_y + flare_size,
+                    fill="#FFFFFF",
+                    outline=""
+                )
 
         # ==================================================
         # PARTICLES
