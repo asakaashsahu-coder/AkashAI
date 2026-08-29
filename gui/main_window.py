@@ -1,5 +1,6 @@
 import threading
 import time
+from datetime import datetime
 
 import customtkinter as ctk
 
@@ -52,6 +53,13 @@ class MainWindow(ctk.CTk):
 
         self.closing = False
         self.shutdown_started = False
+
+        # Reminder Soon state. The orb enters a softer glow during the
+        # five minutes before the next reminder, then the existing
+        # Reminder state takes over at the exact due time.
+        self.reminder_soon_active = False
+        self.reminder_soon_task = ""
+        self.reminder_soon_job = None
 
         # ==================================================
         # HEADER
@@ -183,6 +191,7 @@ class MainWindow(ctk.CTk):
             "Listening": "#60a5fa",
             "Thinking": "#c084fc",
             "Speaking": "#facc15",
+            "Reminder Soon": "#8fe9ff",
             "Reminder": "#fb7185",
             "Error": "#fb7185"
         }
@@ -262,6 +271,8 @@ class MainWindow(ctk.CTk):
             self.set_status(
                 "Ready"
             )
+
+            self._start_reminder_soon_watch()
 
             self.load_active_chat()
 
@@ -374,13 +385,14 @@ class MainWindow(ctk.CTk):
             self.after(
                 0,
                 lambda: self._show_response(
-                    response
+                    response,
+                    message
                 )
             )
         except Exception:
             pass
 
-    def _show_response(self, response):
+    def _show_response(self, response, message=""):
         if self.closing:
             return
 
@@ -444,10 +456,19 @@ class MainWindow(ctk.CTk):
 
             return
 
-        if (
-            self.wake_mode
-            and not self.busy
-        ):
+        self._restore_idle_status()
+
+    def _restore_idle_status(self):
+        if self.closing or self.busy:
+            return
+
+        if self.reminder_soon_active:
+            self.set_status(
+                "Reminder Soon"
+            )
+            return
+
+        if self.wake_mode:
             self.set_status(
                 "Wake Listening"
             )
@@ -455,6 +476,156 @@ class MainWindow(ctk.CTk):
             self.set_status(
                 "Ready"
             )
+
+    # ==================================================
+    # REMINDER SOON WATCH
+    # ==================================================
+
+    def _start_reminder_soon_watch(self):
+        self._cancel_reminder_soon_watch()
+        self._check_upcoming_reminder()
+
+    def _cancel_reminder_soon_watch(self):
+        if self.reminder_soon_job is None:
+            return
+
+        try:
+            self.after_cancel(
+                self.reminder_soon_job
+            )
+        except Exception:
+            pass
+
+        self.reminder_soon_job = None
+
+    def _next_active_reminder(self):
+        if (
+            self.router is None
+            or not hasattr(
+                self.router,
+                "automation"
+            )
+        ):
+            return None
+
+        automation = self.router.automation
+
+        try:
+            with automation.lock:
+                reminders = automation._load(
+                    automation.reminders_file,
+                    []
+                )
+        except Exception as error:
+            print(
+                "Reminder Soon read error:",
+                error
+            )
+            return None
+
+        now = datetime.now()
+        upcoming = []
+
+        for item in reminders:
+            if item.get(
+                "done",
+                False
+            ):
+                continue
+
+            try:
+                due = datetime.fromisoformat(
+                    item.get(
+                        "due_at",
+                        ""
+                    )
+                )
+            except Exception:
+                continue
+
+            if due <= now:
+                continue
+
+            upcoming.append(
+                (
+                    due,
+                    str(
+                        item.get(
+                            "task",
+                            "Reminder"
+                        )
+                        or "Reminder"
+                    ).strip()
+                )
+            )
+
+        if not upcoming:
+            return None
+
+        upcoming.sort(
+            key=lambda entry: entry[0]
+        )
+
+        return upcoming[0]
+
+    def _check_upcoming_reminder(self):
+        self.reminder_soon_job = None
+
+        if self.closing:
+            return
+
+        next_reminder = self._next_active_reminder()
+        should_glow = False
+        task = ""
+
+        if next_reminder is not None:
+            due, task = next_reminder
+            seconds_left = (
+                due - datetime.now()
+            ).total_seconds()
+
+            # Soft reminder glow begins during the last five minutes.
+            should_glow = (
+                0 < seconds_left <= 300
+            )
+
+        changed = (
+            should_glow
+            != self.reminder_soon_active
+        )
+
+        task_changed = (
+            should_glow
+            and task
+            != self.reminder_soon_task
+        )
+
+        self.reminder_soon_active = should_glow
+        self.reminder_soon_task = (
+            task
+            if should_glow
+            else ""
+        )
+
+        # Do not interrupt Listening, Thinking, Speaking or the full
+        # Reminder alert. The softer glow is only an idle visual state.
+        if (
+            (changed or task_changed)
+            and not self.busy
+            and (
+                self.voice is None
+                or not self.voice.speaking()
+            )
+        ):
+            self._restore_idle_status()
+
+        try:
+            self.reminder_soon_job = self.after(
+                15000,
+                self._check_upcoming_reminder
+            )
+        except Exception:
+            self.reminder_soon_job = None
 
     # ==================================================
     # REMINDER ALERTS
@@ -477,6 +648,9 @@ class MainWindow(ctk.CTk):
     def _present_reminder(self, task):
         if self.closing:
             return
+
+        self.reminder_soon_active = False
+        self.reminder_soon_task = ""
 
         task = str(
             task

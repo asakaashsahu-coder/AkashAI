@@ -121,6 +121,12 @@ class FloatingAssistant(ctk.CTkToplevel):
                 "outer": "#FB7185"
             },
 
+            "Reminder Soon": {
+                "core": "#2F80ED",
+                "bright": "#8FE9FF",
+                "outer": "#7B61FF"
+            },
+
             "Error": {
                 "core": "#374151",
                 "bright": "#FFFFFF",
@@ -175,6 +181,131 @@ class FloatingAssistant(ctk.CTkToplevel):
             fill="both",
             expand=True
         )
+
+        if reminder_soon_mode:
+            # A quiet "something is coming" halo.
+            soon_pulse = (
+                0.5
+                + 0.5 * math.sin(
+                    self.phase * 0.72
+                )
+            )
+
+            soon_radius = (
+                46
+                + soon_pulse * 4.5
+            ) * hover_scale
+
+            self.canvas.create_oval(
+                center - soon_radius,
+                center - soon_radius,
+                center + soon_radius,
+                center + soon_radius,
+                outline=self._mix(
+                    bright,
+                    "#FFFFFF",
+                    0.22
+                ),
+                width=2
+            )
+
+            indicator_angle = math.radians(
+                self.rotation * 0.42
+            )
+
+            indicator_distance = (
+                49
+                + soon_pulse * 2
+            )
+
+            indicator_x = (
+                center
+                + math.cos(indicator_angle)
+                * indicator_distance
+            )
+
+            indicator_y = (
+                center
+                + math.sin(indicator_angle)
+                * indicator_distance
+            )
+
+            indicator_size = (
+                2.2
+                + soon_pulse * 1.0
+            )
+
+            self.canvas.create_oval(
+                indicator_x - indicator_size,
+                indicator_y - indicator_size,
+                indicator_x + indicator_size,
+                indicator_y + indicator_size,
+                fill="#FFFFFF",
+                outline=""
+            )
+
+        if reminder_mode:
+            # Bright expanding alert halo.
+            alert_radius = (
+                47
+                + reminder_burst * 10
+            ) * hover_scale
+
+            self.canvas.create_oval(
+                center - alert_radius,
+                center - alert_radius,
+                center + alert_radius,
+                center + alert_radius,
+                outline=self._mix(
+                    bright,
+                    "#FFFFFF",
+                    0.36
+                ),
+                width=2
+            )
+
+            # Four small energy flares around the globe.
+            flare_distance = (
+                52
+                + reminder_burst * 5
+            )
+
+            flare_size = (
+                2.0
+                + reminder_burst * 2.0
+            )
+
+            for flare_angle in (
+                0,
+                90,
+                180,
+                270
+            ):
+                radians = math.radians(
+                    flare_angle
+                    + self.rotation * 0.35
+                )
+
+                flare_x = (
+                    center
+                    + math.cos(radians)
+                    * flare_distance
+                )
+
+                flare_y = (
+                    center
+                    + math.sin(radians)
+                    * flare_distance
+                )
+
+                self.canvas.create_oval(
+                    flare_x - flare_size,
+                    flare_y - flare_size,
+                    flare_x + flare_size,
+                    flare_y + flare_size,
+                    fill="#FFFFFF",
+                    outline=""
+                )
 
         # ==================================================
         # PARTICLES
@@ -423,34 +554,77 @@ class FloatingAssistant(ctk.CTkToplevel):
             + self.hover_amount * 0.06
         )
 
+        reminder_mode = (
+            self.status == "Reminder"
+        )
+
+        reminder_soon_mode = (
+            self.status == "Reminder Soon"
+        )
+
+        reminder_burst = (
+            0.5
+            + 0.5 * math.sin(
+                self.phase * 1.85
+            )
+        )
+
         # ==================================================
         # AMBIENT GLOW
         # ==================================================
 
-        glow_radii = [
-            (
-                57,
-                0.08
-            ),
-            (
-                53,
-                0.13
-            ),
-            (
-                49,
-                0.20
-            ),
-            (
-                45,
-                0.29
-            )
-        ]
+        if reminder_mode:
+            glow_radii = [
+                (
+                    62,
+                    0.11
+                ),
+                (
+                    58,
+                    0.18
+                ),
+                (
+                    54,
+                    0.28
+                ),
+                (
+                    49,
+                    0.42
+                ),
+                (
+                    45,
+                    0.58
+                )
+            ]
+        else:
+            glow_radii = [
+                (
+                    57,
+                    0.08
+                ),
+                (
+                    53,
+                    0.13
+                ),
+                (
+                    49,
+                    0.20
+                ),
+                (
+                    45,
+                    0.29
+                )
+            ]
 
         for radius, intensity in glow_radii:
 
             animated = (
                 radius
-                + pulse * 3.2
+                + (
+                    reminder_burst * 6.5
+                    if reminder_mode
+                    else pulse * 3.2
+                )
             ) * hover_scale
 
             glow_color = self._mix(
@@ -540,8 +714,15 @@ class FloatingAssistant(ctk.CTkToplevel):
         # ==================================================
 
         ring_radius = (
-            42
-            + slow_pulse * 2.2
+            (
+                44
+                + reminder_burst * 4.2
+            )
+            if reminder_mode
+            else (
+                42
+                + slow_pulse * 2.2
+            )
         ) * hover_scale
 
         self.canvas.create_oval(
@@ -566,11 +747,21 @@ class FloatingAssistant(ctk.CTkToplevel):
             )
 
             extent = (
-                58
-                + math.sin(
-                    self.phase
-                    + index
-                ) * 11
+                (
+                    72
+                    + math.sin(
+                        self.phase * 1.7
+                        + index
+                    ) * 18
+                )
+                if reminder_mode
+                else (
+                    58
+                    + math.sin(
+                        self.phase
+                        + index
+                    ) * 11
+                )
             )
 
             self.canvas.create_arc(
@@ -590,8 +781,15 @@ class FloatingAssistant(ctk.CTkToplevel):
         # ==================================================
 
         core_radius = (
-            34
-            + pulse * 1.4
+            (
+                34
+                + reminder_burst * 2.6
+            )
+            if reminder_mode
+            else (
+                34
+                + pulse * 1.4
+            )
         ) * hover_scale
 
         # Dark shell.
@@ -702,16 +900,68 @@ class FloatingAssistant(ctk.CTkToplevel):
                 bright
             )
 
-        elif self.status == "Reminder":
+        elif self.status == "Reminder Soon":
+
+            soon_inner = (
+                13
+                + (
+                    0.5
+                    + 0.5 * math.sin(
+                        self.phase * 0.72
+                    )
+                ) * 1.5
+            )
+
+            self.canvas.create_oval(
+                center - soon_inner,
+                center - soon_inner,
+                center + soon_inner,
+                center + soon_inner,
+                outline=self._mix(
+                    bright,
+                    "#FFFFFF",
+                    0.30
+                ),
+                width=1
+            )
 
             self.canvas.create_text(
                 center,
                 center,
+                text="J",
+                fill="#FFFFFF",
+                font=(
+                    "Segoe UI",
+                    21,
+                    "bold"
+                )
+            )
+
+        elif self.status == "Reminder":
+
+            # Small inner alert ring.
+            reminder_inner = (
+                15
+                + reminder_burst * 2.0
+            )
+
+            self.canvas.create_oval(
+                center - reminder_inner,
+                center - reminder_inner,
+                center + reminder_inner,
+                center + reminder_inner,
+                outline="#FFFFFF",
+                width=2
+            )
+
+            self.canvas.create_text(
+                center,
+                center - 1,
                 text="!",
                 fill="#FFFFFF",
                 font=(
                     "Segoe UI",
-                    28,
+                    24,
                     "bold"
                 )
             )

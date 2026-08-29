@@ -39,6 +39,7 @@ class Router:
         self.pending_active_close = None
         self.pending_context_close = None
         self.pending_multi_close = None
+        self.pending_reminder = None
 
     # --------------------------------------------------
     # NORMALIZE USER MESSAGE
@@ -46,6 +47,11 @@ class Router:
 
     def normalize_command(self, message):
         msg = message.lower().strip()
+
+        # Speech recognition may return AM/PM as "A.M.", "a.m", etc.
+        # Normalize those forms before reminder parsing.
+        msg = re.sub(r"\ba\s*\.\s*m\.?\b", "am", msg, flags=re.IGNORECASE)
+        msg = re.sub(r"\bp\s*\.\s*m\.?\b", "pm", msg, flags=re.IGNORECASE)
 
         # Remove wake-name / polite prefixes only from the beginning.
         # This avoids damaging normal words elsewhere in a sentence.
@@ -1729,8 +1735,179 @@ class Router:
 
         return due
 
+    def _nearest_future_time(self, hour_text, minute_text=None, meridiem=None, tomorrow=False):
+        """Build a reminder datetime, treating bare 1-12 hours like normal speech."""
+        try:
+            hour = int(hour_text)
+            minute = int(minute_text or 0)
+        except (TypeError, ValueError):
+            return None
+
+        if minute < 0 or minute > 59:
+            return None
+
+        if meridiem:
+            return self._build_reminder_datetime(
+                str(hour),
+                str(minute),
+                meridiem,
+                tomorrow=tomorrow
+            )
+
+        # A bare hour such as "at 6" is normally conversational 12-hour time.
+        # Pick the nearest future 6 AM / 6 PM instead of always assuming 06:00.
+        if 1 <= hour <= 12:
+            now = datetime.now()
+            candidates = []
+
+            for suffix in ("am", "pm"):
+                candidate = self._build_reminder_datetime(
+                    str(hour),
+                    str(minute),
+                    suffix,
+                    tomorrow=tomorrow
+                )
+
+                if candidate is not None:
+                    candidates.append(candidate)
+
+            if candidates:
+                return min(candidates)
+
+        return self._build_reminder_datetime(
+            str(hour),
+            str(minute),
+            None,
+            tomorrow=tomorrow
+        )
+
+    def _daypart_time(self, daypart, daily=False):
+        """Return a practical default time for common daily-life phrases."""
+        defaults = {
+            "morning": (8, 0),
+            "after breakfast": (9, 0),
+            "noon": (12, 0),
+            "lunch": (13, 0),
+            "after lunch": (14, 0),
+            "afternoon": (15, 0),
+            "evening": (19, 0),
+            "tonight": (20, 0),
+            "night": (21, 0),
+            "bedtime": (23, 0),
+        }
+
+        if daypart not in defaults:
+            return None
+
+        hour, minute = defaults[daypart]
+        now = datetime.now()
+        due = now.replace(
+            hour=hour,
+            minute=minute,
+            second=0,
+            microsecond=0
+        )
+
+        if due <= now:
+            due += timedelta(days=1)
+
+        return due
+
+    def _set_pending_reminder(self, task=None, due=None, daily=False):
+        self.pending_reminder = {
+            "task": (task or "").strip(),
+            "due": due,
+            "daily": bool(daily),
+        }
+
+    def _finish_pending_reminder(self, message):
+        pending = self.pending_reminder
+
+        if not pending:
+            return None
+
+        normalized = self.normalize_command(message)
+        task = pending.get("task", "").strip()
+        due = pending.get("due")
+        daily = pending.get("daily", False)
+
+        if due is None:
+            # Follow-ups such as "at 8 tonight", "tomorrow at 7", or "in 20 minutes".
+            relative = re.match(
+                r"^(?:in\s+)?(half an hour|an hour|\d+\s*(?:minutes?|hours?))$",
+                normalized
+            )
+
+            if relative:
+                value = relative.group(1)
+
+                if value == "half an hour":
+                    minutes = 30
+                elif value == "an hour":
+                    minutes = 60
+                else:
+                    match = re.match(r"(\d+)\s*(minutes?|hours?)", value)
+                    amount = int(match.group(1))
+                    unit = match.group(2)
+                    minutes = amount * 60 if unit.startswith("hour") else amount
+
+                self.pending_reminder = None
+                return self.automation.add_reminder(task, minutes)
+
+            follow_time = re.match(
+                r"^(?:(today|tomorrow)\s+)?(?:at\s+)?"
+                r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?"
+                r"(?:\s+(tonight|today|tomorrow))?$",
+                normalized
+            )
+
+            if follow_time:
+                tomorrow = (
+                    follow_time.group(1) == "tomorrow"
+                    or follow_time.group(5) == "tomorrow"
+                )
+                due = self._nearest_future_time(
+                    follow_time.group(2),
+                    follow_time.group(3),
+                    follow_time.group(4),
+                    tomorrow=tomorrow
+                )
+
+            if due is None:
+                for daypart in (
+                    "after breakfast", "after lunch", "morning", "noon",
+                    "afternoon", "evening", "tonight", "night", "bedtime"
+                ):
+                    if normalized == daypart or normalized == f"in the {daypart}":
+                        due = self._daypart_time(daypart, daily=daily)
+                        break
+
+            if due is None:
+                return "What time should I use for that reminder?"
+
+        if not task:
+            cleaned = normalized
+            cleaned = re.sub(r"^(?:to\s+|about\s+)", "", cleaned).strip()
+
+            if not cleaned:
+                return "What should I remind you about?"
+
+            task = cleaned
+
+        self.pending_reminder = None
+
+        if daily:
+            return self.automation.add_daily_reminder(task, due)
+
+        return self.automation.add_reminder_at(task, due)
+
     def handle_automation_command(self, message):
         normalized = self.normalize_command(message)
+
+        # Complete a conversational reminder that was missing either the time or task.
+        pending_result = self._finish_pending_reminder(message)
+        if pending_result is not None:
+            return pending_result
 
         note_prefixes = [
             "create a note saying ",
@@ -1757,6 +1934,7 @@ class Router:
         ]:
             return self.automation.clear_notes()
 
+        # "Remind me in 20 minutes to check the food"
         reminder = re.match(
             r"^remind me in\s+(\d+)\s*"
             r"(minute|minutes|hour|hours)\s+to\s+(.+)$",
@@ -1767,24 +1945,41 @@ class Router:
             amount = int(reminder.group(1))
             unit = reminder.group(2)
             task = reminder.group(3).strip()
-
             minutes = amount * 60 if unit.startswith("hour") else amount
+            return self.automation.add_reminder(task, minutes)
 
+        # "In half an hour remind me to check the food"
+        half_hour = re.match(
+            r"^in\s+half an hour\s+remind me(?:\s+to)?\s+(.+)$",
+            normalized
+        )
+
+        if half_hour:
             return self.automation.add_reminder(
-                task,
-                minutes
+                half_hour.group(1).strip(),
+                30
             )
 
+        # "Remind me in half an hour to check the food"
+        half_hour_alt = re.match(
+            r"^remind me in\s+half an hour(?:\s+to)?\s+(.+)$",
+            normalized
+        )
+
+        if half_hour_alt:
+            return self.automation.add_reminder(
+                half_hour_alt.group(1).strip(),
+                30
+            )
+
+        # "Remind me at 9 PM to take medicine"
         exact_reminder = re.match(
-            r"^remind me at\s+"
-            r"(\d{1,2})"
-            r"(?::(\d{2}))?"
-            r"\s*(am|pm)?\s+to\s+(.+)$",
+            r"^remind me at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+to\s+(.+)$",
             normalized
         )
 
         if exact_reminder:
-            due = self._build_reminder_datetime(
+            due = self._nearest_future_time(
                 exact_reminder.group(1),
                 exact_reminder.group(2),
                 exact_reminder.group(3)
@@ -1798,16 +1993,35 @@ class Router:
                 due
             )
 
+        # "Remind me to drink water at 10 AM"
+        task_first = re.match(
+            r"^remind me to\s+(.+?)\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$",
+            normalized
+        )
+
+        if task_first:
+            due = self._nearest_future_time(
+                task_first.group(2),
+                task_first.group(3),
+                task_first.group(4)
+            )
+
+            if due is None:
+                return "I couldn't understand that reminder time."
+
+            return self.automation.add_reminder_at(
+                task_first.group(1).strip(),
+                due
+            )
+
+        # "Remind me tomorrow at 7 AM to wake up"
         tomorrow_reminder = re.match(
-            r"^remind me tomorrow at\s+"
-            r"(\d{1,2})"
-            r"(?::(\d{2}))?"
-            r"\s*(am|pm)?\s+to\s+(.+)$",
+            r"^remind me tomorrow at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+to\s+(.+)$",
             normalized
         )
 
         if tomorrow_reminder:
-            due = self._build_reminder_datetime(
+            due = self._nearest_future_time(
                 tomorrow_reminder.group(1),
                 tomorrow_reminder.group(2),
                 tomorrow_reminder.group(3),
@@ -1821,6 +2035,196 @@ class Router:
                 tomorrow_reminder.group(4).strip(),
                 due
             )
+
+        # "Wake me up tomorrow at 7"
+        wake_up = re.match(
+            r"^wake me up(?:\s+tomorrow)?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$",
+            normalized
+        )
+
+        if wake_up:
+            due = self._nearest_future_time(
+                wake_up.group(1),
+                wake_up.group(2),
+                wake_up.group(3),
+                tomorrow="tomorrow" in normalized
+            )
+
+            if due is None:
+                return "I couldn't understand that wake-up time."
+
+            return self.automation.add_reminder_at("wake up", due)
+
+        # "At 6 remind me I have class" / "At 10 tell me to stop using the laptop"
+        time_first = re.match(
+            r"^at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+"
+            r"(?:remind me(?:\s+to)?|tell me to)\s+(.+)$",
+            normalized
+        )
+
+        if time_first:
+            due = self._nearest_future_time(
+                time_first.group(1),
+                time_first.group(2),
+                time_first.group(3)
+            )
+
+            if due is None:
+                return "I couldn't understand that reminder time."
+
+            return self.automation.add_reminder_at(
+                time_first.group(4).strip(),
+                due
+            )
+
+        # Daily reminders with an exact time.
+        daily_exact = re.match(
+            r"^remind me\s+(?:every day|everyday|daily)\s+at\s+"
+            r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+to\s+(.+)$",
+            normalized
+        )
+
+        if daily_exact:
+            due = self._nearest_future_time(
+                daily_exact.group(1),
+                daily_exact.group(2),
+                daily_exact.group(3)
+            )
+
+            if due is None:
+                return "I couldn't understand that daily reminder time."
+
+            return self.automation.add_daily_reminder(
+                daily_exact.group(4).strip(),
+                due
+            )
+
+        daily_exact_alt = re.match(
+            r"^(?:every day|everyday|daily)\s+(?:at\s+)?"
+            r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+"
+            r"remind me(?:\s+to)?\s+(.+)$",
+            normalized
+        )
+
+        if daily_exact_alt:
+            due = self._nearest_future_time(
+                daily_exact_alt.group(1),
+                daily_exact_alt.group(2),
+                daily_exact_alt.group(3)
+            )
+
+            if due is None:
+                return "I couldn't understand that daily reminder time."
+
+            return self.automation.add_daily_reminder(
+                daily_exact_alt.group(4).strip(),
+                due
+            )
+
+        # "Every morning remind me to drink water"
+        daypart_daily = re.match(
+            r"^every\s+(morning|afternoon|evening|night)\s+"
+            r"remind me(?:\s+to)?\s+(.+)$",
+            normalized
+        )
+
+        if daypart_daily:
+            daypart = daypart_daily.group(1)
+            due = self._daypart_time(daypart, daily=True)
+
+            return self.automation.add_daily_reminder(
+                daypart_daily.group(2).strip(),
+                due
+            )
+
+        # "Remind me every morning to drink water"
+        daypart_daily_alt = re.match(
+            r"^remind me every\s+(morning|afternoon|evening|night)\s+to\s+(.+)$",
+            normalized
+        )
+
+        if daypart_daily_alt:
+            daypart = daypart_daily_alt.group(1)
+            due = self._daypart_time(daypart, daily=True)
+
+            return self.automation.add_daily_reminder(
+                daypart_daily_alt.group(2).strip(),
+                due
+            )
+
+        # "Remind me after lunch to work on coding"
+        daypart_once = re.match(
+            r"^remind me\s+(after breakfast|after lunch|morning|afternoon|evening|tonight|at night|at bedtime)\s+to\s+(.+)$",
+            normalized
+        )
+
+        if daypart_once:
+            daypart = daypart_once.group(1)
+            daypart = daypart.replace("at ", "", 1) if daypart.startswith("at ") else daypart
+            due = self._daypart_time(daypart)
+
+            return self.automation.add_reminder_at(
+                daypart_once.group(2).strip(),
+                due
+            )
+
+        # Natural "I need to call him tonight, remind me" style.
+        need_reminder = re.match(
+            r"^i need to\s+(.+?)\s+(tonight|this evening|tomorrow morning|tomorrow),?\s+remind me$",
+            normalized
+        )
+
+        if need_reminder:
+            task = need_reminder.group(1).strip()
+            when = need_reminder.group(2)
+
+            if when == "tonight":
+                due = self._daypart_time("tonight")
+            elif when == "this evening":
+                due = self._daypart_time("evening")
+            elif when == "tomorrow morning":
+                now = datetime.now()
+                due = (now + timedelta(days=1)).replace(
+                    hour=8, minute=0, second=0, microsecond=0
+                )
+            else:
+                # Tomorrow without a time is ambiguous, so ask naturally.
+                self._set_pending_reminder(task=task)
+                return "Sure. What time tomorrow should I remind you?"
+
+            return self.automation.add_reminder_at(task, due)
+
+        # Missing task: "Remind me at 8:55 AM"
+        missing_task = re.match(
+            r"^remind me at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$",
+            normalized
+        )
+
+        if missing_task:
+            due = self._nearest_future_time(
+                missing_task.group(1),
+                missing_task.group(2),
+                missing_task.group(3)
+            )
+
+            if due is None:
+                return "I couldn't understand that reminder time."
+
+            self._set_pending_reminder(due=due)
+            return "Sure. What should I remind you about?"
+
+        # Missing time: "Remind me to study"
+        missing_time = re.match(
+            r"^remind me(?:\s+to)?\s+(.+)$",
+            normalized
+        )
+
+        if missing_time:
+            task = missing_time.group(1).strip()
+
+            if task:
+                self._set_pending_reminder(task=task)
+                return "Sure. When should I remind you?"
 
         if normalized in [
             "what do i have today",
@@ -2507,6 +2911,24 @@ class Router:
         normalized = self.normalize_command(
             message
         )
+
+        # ----------------------------------------------
+        # PENDING REMINDER FOLLOW-UP
+        # ----------------------------------------------
+        # A reply such as "at 8 tonight" is not a reminder command by itself,
+        # so it may otherwise be classified as normal conversation. If Jeroo
+        # is already waiting for reminder details, finish that reminder before
+        # any other routing takes place.
+        if self.pending_reminder is not None:
+            reminder_response = self._finish_pending_reminder(
+                message
+            )
+
+            if reminder_response is not None:
+                print(
+                    "Jeroo intent: reminder_followup"
+                )
+                return reminder_response
 
         # ----------------------------------------------
         # WEB RESEARCH
