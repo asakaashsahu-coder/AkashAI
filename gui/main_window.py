@@ -1,3 +1,5 @@
+import os
+import queue
 import threading
 import time
 from datetime import datetime
@@ -60,6 +62,12 @@ class MainWindow(ctk.CTk):
         self.reminder_soon_active = False
         self.reminder_soon_task = ""
         self.reminder_soon_job = None
+
+        # AutomationManager checks reminders on a worker thread.
+        # Tkinter/CustomTkinter UI work must stay on the main GUI thread,
+        # so due reminders are handed to this thread-safe queue first.
+        self.reminder_queue = queue.Queue()
+        self.reminder_queue_job = None
 
         # ==================================================
         # HEADER
@@ -273,6 +281,7 @@ class MainWindow(ctk.CTk):
             )
 
             self._start_reminder_soon_watch()
+            self._start_reminder_queue_watch()
 
             self.load_active_chat()
 
@@ -631,19 +640,104 @@ class MainWindow(ctk.CTk):
     # REMINDER ALERTS
     # ==================================================
 
+    def _start_reminder_queue_watch(self):
+        if self.closing:
+            return
+
+        if self.reminder_queue_job is not None:
+            try:
+                self.after_cancel(
+                    self.reminder_queue_job
+                )
+            except Exception:
+                pass
+
+        self.reminder_queue_job = self.after(
+            200,
+            self._drain_reminder_queue
+        )
+
+    def _drain_reminder_queue(self):
+        self.reminder_queue_job = None
+
+        if self.closing:
+            return
+
+        while True:
+            try:
+                task = self.reminder_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            self._present_reminder(task)
+
+        try:
+            self.reminder_queue_job = self.after(
+                200,
+                self._drain_reminder_queue
+            )
+        except Exception:
+            self.reminder_queue_job = None
+
     def _on_reminder_due(self, task):
         if self.closing:
             return
 
+        # This callback is invoked by AutomationManager's background
+        # reminder thread. Never call Tk/CustomTkinter methods here.
         try:
-            self.after(
-                0,
-                lambda: self._present_reminder(
-                    task
-                )
+            self.reminder_queue.put_nowait(
+                str(task or "Reminder")
             )
-        except Exception:
-            pass
+        except Exception as error:
+            print(
+                "Reminder queue error:",
+                error
+            )
+
+    def _show_windows_notification(self, task):
+        """Show a Windows toast notification for a due reminder."""
+        if os.name != "nt":
+            return
+
+        task = str(task or "Reminder").strip()
+
+        def notify():
+            try:
+                from winotify import Notification, audio
+
+                toast = Notification(
+                    app_id="Jeroo AI",
+                    title="Jeroo Reminder ⏰",
+                    msg=task,
+                    duration="long"
+                )
+
+                try:
+                    # Use Windows' native looping alarm sound so an important
+                    # Jeroo reminder is noticeable even in floating mode.
+                    toast.set_audio(
+                        audio.LoopingAlarm,
+                        loop=True
+                    )
+                except Exception as error:
+                    print(
+                        "Reminder notification sound error:",
+                        error
+                    )
+
+                toast.show()
+
+            except Exception as error:
+                print(
+                    "Windows notification error:",
+                    error
+                )
+
+        threading.Thread(
+            target=notify,
+            daemon=True
+        ).start()
 
     def _present_reminder(self, task):
         if self.closing:
@@ -661,9 +755,23 @@ class MainWindow(ctk.CTk):
             f"⏰ Reminder: {task}"
         )
 
+        # Native Windows notification. This is separate from the orb and
+        # voice so the reminder is still visible when Jerro is minimized.
+        self._show_windows_notification(
+            task
+        )
+
         self.set_status(
             "Reminder"
         )
+
+        # If Jerro is minimized to the floating globe, make sure the
+        # already-visible orb is lifted so the reminder glow is obvious.
+        try:
+            if not self.winfo_viewable():
+                self.floating_assistant.show()
+        except Exception:
+            pass
 
         try:
             self.chat_area.add_message(
@@ -1121,6 +1229,13 @@ class MainWindow(ctk.CTk):
             )
         )
 
+        if self.router:
+            self.router.brain.set_history(
+                self.chat_history.get_brain_history(
+                    self.active_chat_id
+                )
+            )
+
         self.refresh_chat_history()
 
     def new_conversation(self):
@@ -1133,6 +1248,9 @@ class MainWindow(ctk.CTk):
 
         self.chat_area.clear()
         self.chat_area.show_welcome()
+
+        if self.router:
+            self.router.brain.set_history([])
 
         self.refresh_chat_history()
 
@@ -1159,6 +1277,13 @@ class MainWindow(ctk.CTk):
                 []
             )
         )
+
+        if self.router:
+            self.router.brain.set_history(
+                self.chat_history.get_brain_history(
+                    self.active_chat_id
+                )
+            )
 
         self.refresh_chat_history()
 
@@ -1187,6 +1312,13 @@ class MainWindow(ctk.CTk):
                     []
                 )
             )
+
+            if self.router:
+                self.router.brain.set_history(
+                    self.chat_history.get_brain_history(
+                        self.active_chat_id
+                    )
+                )
 
         self.refresh_chat_history()
 

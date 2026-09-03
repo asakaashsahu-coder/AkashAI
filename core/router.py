@@ -302,6 +302,126 @@ class Router:
         return None
 
     # --------------------------------------------------
+    # RECENT CONVERSATION HISTORY
+    # --------------------------------------------------
+
+    def handle_history_command(self, message):
+        normalized = self.normalize_command(message)
+
+        show_phrases = {
+            "show our recent conversation",
+            "show recent conversation",
+            "show my recent conversation",
+            "recent conversation",
+            "show conversation history",
+            "show my conversation history",
+            "what did we talk about earlier",
+            "what were we talking about",
+            "what were we talking about earlier",
+            "do you remember what we were talking about",
+        }
+
+        if normalized in show_phrases:
+            history = self.brain.get_history()
+
+            if not history:
+                return "I don't have any recent conversation saved yet."
+
+            recent = history[-10:]
+            lines = []
+
+            for item in recent:
+                speaker = "You" if item.get("role") == "user" else "Jeroo"
+                text = (item.get("text") or "").strip()
+                if text:
+                    lines.append(f"{speaker}: {text}")
+
+            if not lines:
+                return "I don't have any recent conversation saved yet."
+
+            return "Here's our recent conversation:\n\n" + "\n\n".join(lines)
+
+        match = re.match(
+            r"^show (?:my |our )?last (\d{1,2}) (?:messages|conversation messages)$",
+            normalized
+        )
+
+        if match:
+            count = max(1, min(int(match.group(1)), 20))
+            history = self.brain.get_history()
+
+            if not history:
+                return "I don't have any recent conversation saved yet."
+
+            recent = history[-count:]
+            lines = []
+
+            for item in recent:
+                speaker = "You" if item.get("role") == "user" else "Jeroo"
+                text = (item.get("text") or "").strip()
+                if text:
+                    lines.append(f"{speaker}: {text}")
+
+            return f"Here are the last {len(lines)} messages:\n\n" + "\n\n".join(lines)
+
+        if normalized in {
+            "what was my last message",
+            "what did i say last",
+            "what did i say before",
+            "show my last message",
+        }:
+            history = self.brain.get_history()
+
+            for item in reversed(history):
+                if item.get("role") == "user" and item.get("text"):
+                    return "Your last saved message was: " + item["text"].strip()
+
+            return "I don't have a previous message from you saved yet."
+
+        if normalized in {
+            "what was your last message",
+            "what did you say last",
+            "what did you say before",
+            "show your last message",
+        }:
+            history = self.brain.get_history()
+
+            for item in reversed(history):
+                if item.get("role") == "model" and item.get("text"):
+                    return "My last saved reply was: " + item["text"].strip()
+
+            return "I don't have a previous reply saved yet."
+
+        if normalized in {
+            "summarize our recent conversation",
+            "summarise our recent conversation",
+            "summarize recent conversation",
+            "summarise recent conversation",
+        }:
+            history = self.brain.get_history()
+
+            if not history:
+                return "I don't have enough recent conversation to summarize yet."
+
+            recent = history[-20:]
+            transcript = "\n".join(
+                f"{'User' if item.get('role') == 'user' else 'Jeroo'}: {item.get('text', '').strip()}"
+                for item in recent
+                if item.get("text")
+            )
+
+            prompt = (
+                "Summarize the recent conversation below naturally and briefly. "
+                "Focus on what the user and Jeroo were working on, important decisions, "
+                "and the latest point reached. Do not invent anything.\n\n"
+                + transcript
+            )
+
+            return self.brain.get_response(prompt, memories=None)
+
+        return None
+
+    # --------------------------------------------------
     # SHORT-TERM ACTION CONTEXT
     # --------------------------------------------------
 
@@ -1834,7 +1954,8 @@ class Router:
         if due is None:
             # Follow-ups such as "at 8 tonight", "tomorrow at 7", or "in 20 minutes".
             relative = re.match(
-                r"^(?:in\s+)?(half an hour|an hour|\d+\s*(?:minutes?|hours?))$",
+                r"^(?:in\s+)?"
+                r"(half an hour|an hour|\d+\s*(?:minutes?|mins?|hours?|hrs?))$",
                 normalized
             )
 
@@ -1846,10 +1967,17 @@ class Router:
                 elif value == "an hour":
                     minutes = 60
                 else:
-                    match = re.match(r"(\d+)\s*(minutes?|hours?)", value)
+                    match = re.match(
+                        r"(\d+)\s*(minutes?|mins?|hours?|hrs?)",
+                        value
+                    )
                     amount = int(match.group(1))
                     unit = match.group(2)
-                    minutes = amount * 60 if unit.startswith("hour") else amount
+                    minutes = (
+                        amount * 60
+                        if unit.startswith(("hour", "hr"))
+                        else amount
+                    )
 
                 self.pending_reminder = None
                 return self.automation.add_reminder(task, minutes)
@@ -1904,10 +2032,22 @@ class Router:
     def handle_automation_command(self, message):
         normalized = self.normalize_command(message)
 
-        # Complete a conversational reminder that was missing either the time or task.
-        pending_result = self._finish_pending_reminder(message)
-        if pending_result is not None:
-            return pending_result
+        # Complete a conversational reminder that was missing either the
+        # time or task. A fresh "remind me..." command starts a new reminder
+        # instead of being consumed by stale pending state.
+        fresh_reminder = (
+            normalized.startswith("remind me")
+            or normalized.startswith("set a reminder")
+            or normalized.startswith("set reminder")
+            or normalized.startswith("create a reminder")
+        )
+
+        if fresh_reminder and self.pending_reminder is not None:
+            self.pending_reminder = None
+        else:
+            pending_result = self._finish_pending_reminder(message)
+            if pending_result is not None:
+                return pending_result
 
         note_prefixes = [
             "create a note saying ",
@@ -1934,19 +2074,45 @@ class Router:
         ]:
             return self.automation.clear_notes()
 
+        # Relative reminders:
         # "Remind me in 20 minutes to check the food"
+        # "Remind me in 1 min to test notification"
+        # "Remind me in 2 hrs to call him"
         reminder = re.match(
             r"^remind me in\s+(\d+)\s*"
-            r"(minute|minutes|hour|hours)\s+to\s+(.+)$",
+            r"(minutes?|mins?|hours?|hrs?)"
+            r"(?:\s+to\s+(.+))?$",
             normalized
         )
 
         if reminder:
             amount = int(reminder.group(1))
             unit = reminder.group(2)
-            task = reminder.group(3).strip()
-            minutes = amount * 60 if unit.startswith("hour") else amount
-            return self.automation.add_reminder(task, minutes)
+            task = (
+                reminder.group(3).strip()
+                if reminder.group(3)
+                else ""
+            )
+
+            minutes = (
+                amount * 60
+                if unit.startswith(("hour", "hr"))
+                else amount
+            )
+
+            if not task:
+                due = datetime.now() + timedelta(
+                    minutes=minutes
+                )
+                self._set_pending_reminder(
+                    due=due
+                )
+                return "Sure. What should I remind you about?"
+
+            return self.automation.add_reminder(
+                task,
+                minutes
+            )
 
         # "In half an hour remind me to check the food"
         half_hour = re.match(
@@ -1960,15 +2126,30 @@ class Router:
                 30
             )
 
-        # "Remind me in half an hour to check the food"
+        # "Remind me in half an hour [to check the food]"
         half_hour_alt = re.match(
-            r"^remind me in\s+half an hour(?:\s+to)?\s+(.+)$",
+            r"^remind me in\s+half an hour"
+            r"(?:\s+to\s+(.+))?$",
             normalized
         )
 
         if half_hour_alt:
+            task = (
+                half_hour_alt.group(1).strip()
+                if half_hour_alt.group(1)
+                else ""
+            )
+
+            if not task:
+                self._set_pending_reminder(
+                    due=datetime.now() + timedelta(
+                        minutes=30
+                    )
+                )
+                return "Sure. What should I remind you about?"
+
             return self.automation.add_reminder(
-                half_hour_alt.group(1).strip(),
+                task,
                 30
             )
 
@@ -2920,15 +3101,43 @@ class Router:
         # is already waiting for reminder details, finish that reminder before
         # any other routing takes place.
         if self.pending_reminder is not None:
-            reminder_response = self._finish_pending_reminder(
-                message
+            # A brand-new reminder command must replace any unfinished
+            # reminder from an earlier conversation. Otherwise a phrase
+            # like "remind me in 1 min" can be mistaken for the answer to
+            # an old "what time?" question.
+            fresh_reminder = (
+                normalized.startswith("remind me")
+                or normalized.startswith("set a reminder")
+                or normalized.startswith("set reminder")
+                or normalized.startswith("create a reminder")
             )
 
-            if reminder_response is not None:
-                print(
-                    "Jeroo intent: reminder_followup"
+            if fresh_reminder:
+                self.pending_reminder = None
+            else:
+                reminder_response = self._finish_pending_reminder(
+                    message
                 )
-                return reminder_response
+
+                if reminder_response is not None:
+                    print(
+                        "Jeroo intent: reminder_followup"
+                    )
+                    return reminder_response
+
+        # ----------------------------------------------
+        # RECENT CONVERSATION HISTORY
+        # ----------------------------------------------
+
+        history_response = self.handle_history_command(
+            message
+        )
+
+        if history_response is not None:
+            print(
+                "Jeroo intent: conversation_history"
+            )
+            return history_response
 
         # ----------------------------------------------
         # WEB RESEARCH
